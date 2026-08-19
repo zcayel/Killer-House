@@ -43,7 +43,3 @@ export function predictPlayerPosition(seconds: number): Vector3 {
     playerPosition.z + playerVelocity.z * seconds
   )
 }
-
-export function distanceToPlayer(pos: Vector3): number {
-  return Vector3.distance(pos, playerPosition)
-}

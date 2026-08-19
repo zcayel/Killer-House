@@ -1,10 +1,16 @@
 /**
  * PHYSICAL LEADERBOARD — a 3D sign showing the fastest escapes, built from
  * the same escapeRanking() data the win-screen overlay already renders
- * (gameLoop.ts). Positioned where the Silver Knife prop used to sit
- * (composite entity "Silver Knife", id 517 — world position 19.5, 5, 13.75;
- * that prop has since been deleted, freeing the spot). Sized up from the
- * first version, on request.
+ * (gameLoop.ts).
+ *
+ * MOVED, on request, to the "Ambient Sound - footsteps" emitter's spot
+ * (composite position 16.32, 8.82, 11.66) — upstairs, over the landing the
+ * chandelier lift arrives on. It previously sat at the deleted Silver Knife
+ * prop's old position (19.5, 5, 13.75). The emitter itself is a separate
+ * entity and is untouched; only its coordinates were borrowed.
+ *
+ * Doubled in both width and overall size at the same time, so the text scales
+ * with the board rather than staying small on a bigger panel.
  *
  * Orientation note: I don't know which way that wall/shelf actually faces,
  * so this is built with identity rotation — if the text reads backwards or
@@ -21,9 +27,13 @@ import { Vector3, Color4 } from '@dcl/sdk/math'
 import { escapeRanking, formatTime } from './gameLoop'
 import { addSafeSystem } from './safeSystem'
 
-const BOARD_POSITION = Vector3.create(19.5, 5, 13.75)
-const BOARD_WIDTH = 3.2
-const BOARD_HEIGHT = 2.4
+const BOARD_POSITION = Vector3.create(16.32, 8.82, 11.66)
+// x2 bigger overall, and then x2 wider again on top of that — so the panel is
+// four times its old width and twice its old height. fontSize below is scaled
+// by the same "x2 bigger" factor so the rows grow with the board.
+const BOARD_SIZE_SCALE = 2
+const BOARD_WIDTH = 3.2 * BOARD_SIZE_SCALE * 2
+const BOARD_HEIGHT = 2.4 * BOARD_SIZE_SCALE
 
 function boardText(): string {
   const ranking = escapeRanking().slice(0, 5)
@@ -63,12 +73,12 @@ export function initLeaderboard() {
   TextShape.create(textEntity, {
     text: lastText,
     font: Font.F_SANS_SERIF,
-    fontSize: 4.5,
+    fontSize: 4.5 * BOARD_SIZE_SCALE,
     textAlign: TextAlignMode.TAM_MIDDLE_CENTER,
     width: BOARD_WIDTH,
     height: BOARD_HEIGHT,
     textWrapping: true,
-    lineSpacing: 5,
+    lineSpacing: 5 * BOARD_SIZE_SCALE,
     textColor: Color4.create(0.93, 0.9, 0.85, 1)
   })
 

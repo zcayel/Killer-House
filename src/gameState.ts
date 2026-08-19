@@ -23,19 +23,21 @@ export function startGame() {
   })
 }
 
-// Auto-start fallback: if the intro's "Enter the house" button hasn't been
-// tapped after this many seconds, start the game anyway. This exists because
-// EVERY hazard, the running HUD, and the whole round loop gate on gameStarted
-// — if a device's tap on that one button never registers (this scene has
-// already found real, confirmed tap-reliability gaps on the mobile client),
-// gameStarted stays false forever: the player is permanently invulnerable
-// (isInvulnerable() below returns true whenever !gameStarted, so nothing can
-// ever kill them), the in-game HUD never appears (it's gated the same way),
-// and the whole game is stuck on the intro screen with no way out. Reading
-// the intro for this long is already generous; the tap still works instantly
-// for anyone it does register for.
-const INTRO_AUTO_START_SECONDS = 12
-let introTimer = 0
+// THE INTRO NEVER STARTS ITSELF. It waits for the player, however long that
+// takes (on request).
+//
+// There WAS a 12-second auto-start here, and the reason was not impatience: if
+// the tap on "Enter the house" fails to register — and this scene has hit real,
+// confirmed tap-reliability gaps on the mobile client — then gameStarted stays
+// false forever. Everything gates on it, so the player would sit permanently
+// invulnerable on an intro screen with no HUD and no way out. The timer was the
+// escape hatch from that soft-lock.
+//
+// Deleting it needs that hatch replaced, not just removed, so the whole intro
+// overlay is a tap target now (see the intro gate in ui.tsx) rather than the
+// button alone. "The one button didn't register" stops being a failure mode
+// when every pixel on the screen is the button. The visible button stays as the
+// affordance — it just isn't the only thing listening any more.
 
 // Short self-clearing movement lock, used by combat so the knife-slash emote
 // isn't overridden by walking (scene emotes only play while standing still).
@@ -117,9 +119,19 @@ export function grantSpawnGrace() {
   graceCountdown = RESPAWN_GRACE_SECONDS
 }
 
-/** Traps should skip their hit checks while this is true (intro/mid-death/respawn/win). */
+// Set while the last-candle preview camera has taken over (gameLoop.ts) —
+// the player can't see or move themselves during that cut, so nothing should
+// be able to hit them either. Kept separate from questInvulnerable rather
+// than reusing it, since the two are unrelated features that could otherwise
+// stomp on each other's on/off timing if they ever overlapped.
+let cameraLockInvulnerable = false
+export function setCameraLockInvulnerable(v: boolean) {
+  cameraLockInvulnerable = v
+}
+
+/** Traps should skip their hit checks while this is true (intro/mid-death/respawn/win/camera-locked). */
 export function isInvulnerable(): boolean {
-  return !gameStarted || isPlayerDead || questInvulnerable || graceCountdown > 0
+  return !gameStarted || isPlayerDead || questInvulnerable || graceCountdown > 0 || cameraLockInvulnerable
 }
 
 function respawnPlayer() {
@@ -140,11 +152,28 @@ function respawnPlayer() {
   grantSpawnGrace()
 }
 
+/**
+ * Skip the rest of the countdown — the death screen's "Respawn now" button.
+ *
+ * Safe to call at any point during the death, not just once the effects have
+ * played out: everything that unwinds a death is edge-triggered on
+ * isPlayerDead going false (deathEffects' shakeSystem watches for that flip to
+ * clear the tombstone and un-hide the avatar) rather than run off a timer, so
+ * nothing is left stranded by cutting the wait short. The camera shake keeps
+ * running on its own clock and hands the camera back when it expires.
+ *
+ * No-op unless actually dead, so a stray click can't teleport a living player
+ * back to spawn. The death overlay that hosts the button only renders while
+ * roundPhase is 'playing', so this also can't fire on the third death, where
+ * the defeat screen is up and the round is resetting anyway.
+ */
+export function respawnNow() {
+  if (!isPlayerDead) return
+  respawnCountdown = 0
+  respawnPlayer()
+}
+
 function respawnSystem(dt: number) {
-  if (!gameStarted) {
-    introTimer += dt
-    if (introTimer >= INTRO_AUTO_START_SECONDS) startGame()
-  }
   if (graceCountdown > 0) graceCountdown -= dt
   if (freezeTimer > 0) {
     freezeTimer -= dt

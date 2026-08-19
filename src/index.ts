@@ -4,13 +4,14 @@ import { initNotifications } from './notifications'
 import { initMultiplayer } from './multiplayer'
 import { initPlayerTracker } from './playerTracker'
 import { initWallSpikes } from './traps/wallSpikes'
-import { initPressurePlateDart } from './traps/pressurePlateDart'
 import { initChandelierCrush } from './traps/chandelierCrush'
+import { initSwingTraps } from './traps/swingTraps'
 import { initFallDeath } from './traps/fallDeath'
 import { initFenceTips } from './traps/fenceTips'
-import { initSwingingBlade } from './traps/swingingBlade'
+import { initPlotBoundary } from './plotBoundary'
 import { initSkeletons } from './enemies/skeletons'
 import { initDeathEffects } from './effects/deathEffects'
+import { initForceField } from './effects/forceField'
 import { initSounds } from './sounds'
 import { initCombat } from './combat'
 import { initGameLoop } from './gameLoop'
@@ -18,7 +19,6 @@ import { initCandles } from './candles'
 import { initLightning } from './lightning'
 import { initDoors } from './doors'
 import { initDust } from './dust'
-import { initGrass } from './grass'
 import { initLeaderboard } from './leaderboard'
 import { safeInit } from './safeSystem'
 
@@ -52,14 +52,17 @@ export function main() {
   safeInit(initMultiplayer, 'initMultiplayer')
   safeInit(initPlayerTracker, 'initPlayerTracker')
   safeInit(initDeathEffects, 'initDeathEffects')
+  // Before initPlotBoundary — the boundary calls forceFieldHit(), which no-ops
+  // until this has built its entities.
+  safeInit(initForceField, 'initForceField')
   safeInit(initSounds, 'initSounds')
 
   safeInit(initWallSpikes, 'initWallSpikes')
-  safeInit(initPressurePlateDart, 'initPressurePlateDart')
   safeInit(initChandelierCrush, 'initChandelierCrush')
+  safeInit(initSwingTraps, 'initSwingTraps')
   safeInit(initFallDeath, 'initFallDeath')
   safeInit(initFenceTips, 'initFenceTips')
-  safeInit(initSwingingBlade, 'initSwingingBlade')
+  safeInit(initPlotBoundary, 'initPlotBoundary')
   safeInit(initSkeletons, 'initSkeletons')
 
   safeInit(initCombat, 'initCombat')
@@ -69,6 +72,5 @@ export function main() {
   safeInit(initLightning, 'initLightning')
   safeInit(initDoors, 'initDoors')
   safeInit(initDust, 'initDust')
-  safeInit(initGrass, 'initGrass')
   safeInit(initLeaderboard, 'initLeaderboard')
 }

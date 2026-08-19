@@ -82,22 +82,22 @@
         "513": {
           "json": {
             "position": {
-              "x": 23.023399353027344,
-              "y": 11.673820495605469,
-              "z": 16.25
+              "x": -6.5,
+              "y": 1.25,
+              "z": -16
             },
             "scale": {
-              "x": 1,
+              "x": 1.2000000476837158,
               "y": 1,
               "z": 1
             },
             "rotation": {
               "x": 0,
               "y": 0,
-              "z": 0,
-              "w": 1
+              "z": -0.027965359389781952,
+              "w": 0.9996088743209839
             },
-            "parent": 0
+            "parent": 554
           }
         },
         "514": {
@@ -145,9 +145,9 @@
         "519": {
           "json": {
             "position": {
-              "x": 17.0577449798584,
-              "y": 0,
-              "z": 10.519172668457031
+              "x": 17.684568405151367,
+              "y": -0.04152935743331909,
+              "z": 5.289267063140869
             },
             "scale": {
               "x": 1.2999999523162842,
@@ -166,9 +166,9 @@
         "520": {
           "json": {
             "position": {
-              "x": 30.168704986572266,
-              "y": 0,
-              "z": 1.4999994039535522
+              "x": 30.601655960083008,
+              "y": -1.9868213740892315e-8,
+              "z": 1.4999998807907104
             },
             "scale": {
               "x": 1,
@@ -187,9 +187,9 @@
         "521": {
           "json": {
             "position": {
-              "x": 0.863564133644104,
+              "x": 4.75,
               "y": 0,
-              "z": 0.8396575450897217
+              "z": 1
             },
             "scale": {
               "x": 1,
@@ -229,9 +229,9 @@
         "523": {
           "json": {
             "position": {
-              "x": 0.8924986124038696,
+              "x": 4.5,
               "y": 0,
-              "z": 31.106929779052734
+              "z": 31
             },
             "scale": {
               "x": 1,
@@ -292,9 +292,9 @@
         "526": {
           "json": {
             "position": {
-              "x": 18.885051727294922,
+              "x": 17,
               "y": 0,
-              "z": 24.228023529052734
+              "z": 28
             },
             "scale": {
               "x": 1,
@@ -334,9 +334,9 @@
         "528": {
           "json": {
             "position": {
-              "x": 4.657471656799316,
+              "x": 7.25,
               "y": 0,
-              "z": 15.508149147033691
+              "z": 13.75
             },
             "scale": {
               "x": 1.5,
@@ -355,9 +355,9 @@
         "529": {
           "json": {
             "position": {
-              "x": 4.657471656799316,
+              "x": 7.084026336669922,
               "y": 0,
-              "z": 12.819262504577637
+              "z": 9.026970863342285
             },
             "scale": {
               "x": 1.5,
@@ -376,9 +376,9 @@
         "530": {
           "json": {
             "position": {
-              "x": 21.016246795654297,
-              "y": 0,
-              "z": 10.519172668457031
+              "x": 21.684568405151367,
+              "y": -0.04152935743331909,
+              "z": 5.289267063140869
             },
             "scale": {
               "x": 1.2999999523162842,
@@ -397,9 +397,9 @@
         "531": {
           "json": {
             "position": {
-              "x": 12.794748306274414,
-              "y": 0,
-              "z": 10.519172668457031
+              "x": 13.43456745147705,
+              "y": -0.04152935743331909,
+              "z": 5.289267063140869
             },
             "scale": {
               "x": 1.2999999523162842,
@@ -418,9 +418,9 @@
         "532": {
           "json": {
             "position": {
-              "x": 4.657471656799316,
+              "x": 7.75,
               "y": 0,
-              "z": 21.758148193359375
+              "z": 23.25
             },
             "scale": {
               "x": 1.5,
@@ -439,9 +439,9 @@
         "534": {
           "json": {
             "position": {
-              "x": 4.657471656799316,
+              "x": 7.25,
               "y": 0,
-              "z": 18.569263458251953
+              "z": 18.5
             },
             "scale": {
               "x": 1.5,
@@ -481,9 +481,9 @@
         "539": {
           "json": {
             "position": {
-              "x": 21.135051727294922,
+              "x": 20,
               "y": 0,
-              "z": 24.228023529052734
+              "z": 28
             },
             "scale": {
               "x": 1,
@@ -583,27 +583,6 @@
             "parent": 554
           }
         },
-        "553": {
-          "json": {
-            "position": {
-              "x": -24.009248733520508,
-              "y": 0,
-              "z": -30.49724578857422
-            },
-            "scale": {
-              "x": 1,
-              "y": 1,
-              "z": 1
-            },
-            "rotation": {
-              "x": 0,
-              "y": 1,
-              "z": 0,
-              "w": 0
-            },
-            "parent": 554
-          }
-        },
         "554": {
           "json": {
             "position": {
@@ -628,9 +607,9 @@
         "563": {
           "json": {
             "position": {
-              "x": -8.010143280029297,
+              "x": -8,
               "y": 0,
-              "z": 0.00275421142578125
+              "z": 0
             },
             "scale": {
               "x": 1,
@@ -649,9 +628,9 @@
         "564": {
           "json": {
             "position": {
-              "x": -17.206878662109375,
+              "x": -17.25,
               "y": 0,
-              "z": 0.21865659952163696
+              "z": 0.25
             },
             "scale": {
               "x": 1,
@@ -670,9 +649,9 @@
         "565": {
           "json": {
             "position": {
-              "x": -9.196735382080078,
+              "x": -9.25,
               "y": 0,
-              "z": 0.2159023880958557
+              "z": 0.25
             },
             "scale": {
               "x": 1,
@@ -691,9 +670,9 @@
         "566": {
           "json": {
             "position": {
-              "x": -21.50844955444336,
+              "x": -21.5,
               "y": 0,
-              "z": 0.4012414216995239
+              "z": 0.5
             },
             "scale": {
               "x": 1,
@@ -712,9 +691,9 @@
         "567": {
           "json": {
             "position": {
-              "x": -29.518592834472656,
+              "x": -29.5,
               "y": 0,
-              "z": 0.4039956331253052
+              "z": 0.5
             },
             "scale": {
               "x": 1,
@@ -754,9 +733,9 @@
         "569": {
           "json": {
             "position": {
-              "x": -24.28473663330078,
-              "y": 0.17951811850070953,
-              "z": -0.32205963134765625
+              "x": -21,
+              "y": 0.25,
+              "z": -0.25
             },
             "scale": {
               "x": 0.9999999403953552,
@@ -775,9 +754,9 @@
         "570": {
           "json": {
             "position": {
-              "x": 0.863564133644104,
+              "x": 4.25,
               "y": 0,
-              "z": 22.177555084228516
+              "z": 22.25
             },
             "scale": {
               "x": 1,
@@ -796,9 +775,9 @@
         "571": {
           "json": {
             "position": {
-              "x": -17.628190994262695,
+              "x": -17.75,
               "y": 0,
-              "z": 0.4012414216995239
+              "z": 0.5
             },
             "scale": {
               "x": 1,
@@ -817,9 +796,9 @@
         "572": {
           "json": {
             "position": {
-              "x": 0.863564133644104,
+              "x": 4.25,
               "y": 0,
-              "z": 13.374433517456055
+              "z": 13.25
             },
             "scale": {
               "x": 1,
@@ -833,27 +812,6 @@
               "w": 1
             },
             "parent": 527
-          }
-        },
-        "573": {
-          "json": {
-            "position": {
-              "x": -24.009248733520508,
-              "y": 0,
-              "z": 0.00275421142578125
-            },
-            "scale": {
-              "x": 1,
-              "y": 1,
-              "z": 1
-            },
-            "rotation": {
-              "x": 0,
-              "y": 1,
-              "z": 0,
-              "w": 0
-            },
-            "parent": 554
           }
         },
         "574": {
@@ -985,9 +943,9 @@
         "580": {
           "json": {
             "position": {
-              "x": -29.518592834472656,
-              "y": 0,
-              "z": -29.346193313598633
+              "x": -29.5,
+              "y": -1.9868215517249155e-8,
+              "z": -26.351655960083008
             },
             "scale": {
               "x": 1,
@@ -1006,9 +964,9 @@
         "581": {
           "json": {
             "position": {
-              "x": -25.51401138305664,
-              "y": 0,
-              "z": -29.346349716186523
+              "x": -25.5,
+              "y": -1.9868215517249155e-8,
+              "z": -26.351655960083008
             },
             "scale": {
               "x": 1,
@@ -1049,7 +1007,7 @@
           "json": {
             "position": {
               "x": 19.25,
-              "y": 2.5843708515167236,
+              "y": 2.6388421058654785,
               "z": 17.75
             },
             "scale": {
@@ -1070,7 +1028,7 @@
           "json": {
             "position": {
               "x": 27.75,
-              "y": 2.5843708515167236,
+              "y": 2.763461112976074,
               "z": 15.5
             },
             "scale": {
@@ -1111,30 +1069,9 @@
         "587": {
           "json": {
             "position": {
-              "x": 16.635051727294922,
+              "x": 13.25,
               "y": 0,
-              "z": 24.228023529052734
-            },
-            "scale": {
-              "x": 1,
-              "y": 1,
-              "z": 1
-            },
-            "rotation": {
-              "x": 0,
-              "y": 0,
-              "z": 0,
-              "w": 1
-            },
-            "parent": 0
-          }
-        },
-        "588": {
-          "json": {
-            "position": {
-              "x": 14.385051727294922,
-              "y": 0,
-              "z": 24.228023529052734
+              "z": 28
             },
             "scale": {
               "x": 1,
@@ -1174,9 +1111,9 @@
         "590": {
           "json": {
             "position": {
-              "x": 23.385051727294922,
+              "x": 23.5,
               "y": 0,
-              "z": 24.228023529052734
+              "z": 28
             },
             "scale": {
               "x": 1,
@@ -1192,23 +1129,107 @@
             "parent": 0
           }
         },
-        "592": {
+        "594": {
           "json": {
             "position": {
-              "x": 18.596229553222656,
-              "y": 3.2014260292053223,
-              "z": 16.191137313842773
+              "x": 23,
+              "y": 11.75,
+              "z": 16.25
             },
             "scale": {
-              "x": 0.7610105276107788,
-              "y": 0.7610105276107788,
-              "z": 0.7610105276107788
+              "x": 1,
+              "y": 1,
+              "z": 1
             },
             "rotation": {
               "x": 0,
-              "y": 0.07845909893512726,
+              "y": 0,
               "z": 0,
-              "w": 0.9969173073768616
+              "w": 1
+            },
+            "parent": 0
+          }
+        },
+        "595": {
+          "json": {
+            "position": {
+              "x": -0.75,
+              "y": 1.25,
+              "z": -16
+            },
+            "scale": {
+              "x": 1.2000000476837158,
+              "y": 1,
+              "z": 1
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": -0.027965359389781952,
+              "w": 0.9996088743209839
+            },
+            "parent": 554
+          }
+        },
+        "596": {
+          "json": {
+            "position": {
+              "x": 23.5,
+              "y": 11.75,
+              "z": 16.25
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "parent": 0
+          }
+        },
+        "597": {
+          "json": {
+            "position": {
+              "x": 23.5,
+              "y": 11.75,
+              "z": 17.75
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "parent": 0
+          }
+        },
+        "598": {
+          "json": {
+            "position": {
+              "x": 23.5,
+              "y": 11.75,
+              "z": 19.320098876953125
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
             },
             "parent": 0
           }
@@ -1279,9 +1300,9 @@
         "602": {
           "json": {
             "position": {
-              "x": -7.711483001708984,
+              "x": -7.711482048034668,
               "y": 0,
-              "z": -30.33976173400879
+              "z": -27.031234741210938
             },
             "scale": {
               "x": 1,
@@ -1300,9 +1321,9 @@
         "603": {
           "json": {
             "position": {
-              "x": -3.7758078575134277,
+              "x": -3.7758069038391113,
               "y": 0,
-              "z": -30.339975357055664
+              "z": -27.031452178955078
             },
             "scale": {
               "x": 1,
@@ -1318,12 +1339,54 @@
             "parent": 568
           }
         },
+        "604": {
+          "json": {
+            "position": {
+              "x": 23.5,
+              "y": 11.75,
+              "z": 20.74856948852539
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "parent": 0
+          }
+        },
+        "605": {
+          "json": {
+            "position": {
+              "x": 20.5,
+              "y": 2.75,
+              "z": 12
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0.9999279975891113,
+              "z": 0,
+              "w": -0.011999676935374737
+            },
+            "parent": 0
+          }
+        },
         "606": {
           "json": {
             "position": {
-              "x": 16.32233238220215,
-              "y": 8.818397521972656,
-              "z": 11.656246185302734
+              "x": 19.629941940307617,
+              "y": 8.759915351867676,
+              "z": 14.253185272216797
             },
             "scale": {
               "x": 4.099999904632568,
@@ -1377,6 +1440,48 @@
               "y": 0,
               "z": 0,
               "w": 1
+            },
+            "parent": 0
+          }
+        },
+        "609": {
+          "json": {
+            "position": {
+              "x": 23.0870304107666,
+              "y": 11.75,
+              "z": 16.5
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "parent": 0
+          }
+        },
+        "66052": {
+          "json": {
+            "position": {
+              "x": 15.75,
+              "y": 11.75,
+              "z": 8
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "rotation": {
+              "x": 0,
+              "y": 1,
+              "z": 0,
+              "w": 6.123234262925839e-17
             },
             "parent": 0
           }
@@ -1503,13 +1608,115 @@
             ]
           }
         },
-        "592": {
+        "596": {
           "json": {
             "states": [
               {
-                "clip": "ArmatureAction",
+                "clip": "TemplateHN.011Action.001",
                 "playing": true,
-                "weight": 1,
+                "weight": -1,
+                "speed": 1,
+                "loop": false,
+                "shouldReset": false
+              },
+              {
+                "clip": "TemplateHN.011Action",
+                "playing": false,
+                "weight": -1,
+                "speed": 1,
+                "loop": false,
+                "shouldReset": false
+              }
+            ]
+          }
+        },
+        "597": {
+          "json": {
+            "states": [
+              {
+                "clip": "TemplateHN.011Action.001",
+                "playing": true,
+                "weight": 0.20000000298023224,
+                "speed": 1,
+                "loop": false,
+                "shouldReset": false
+              },
+              {
+                "clip": "TemplateHN.011Action",
+                "playing": false,
+                "weight": -1,
+                "speed": 1,
+                "loop": false,
+                "shouldReset": false
+              }
+            ]
+          }
+        },
+        "598": {
+          "json": {
+            "states": [
+              {
+                "clip": "TemplateHN.011Action.001",
+                "playing": true,
+                "weight": 0.7599999904632568,
+                "speed": 1,
+                "loop": false,
+                "shouldReset": false
+              },
+              {
+                "clip": "TemplateHN.011Action",
+                "playing": false,
+                "weight": -1,
+                "speed": 1,
+                "loop": false,
+                "shouldReset": false
+              }
+            ]
+          }
+        },
+        "604": {
+          "json": {
+            "states": [
+              {
+                "clip": "TemplateHN.011Action.001",
+                "playing": true,
+                "weight": 0.10999999940395355,
+                "speed": 1,
+                "loop": false,
+                "shouldReset": false
+              },
+              {
+                "clip": "TemplateHN.011Action",
+                "playing": false,
+                "weight": -1,
+                "speed": 1,
+                "loop": false,
+                "shouldReset": false
+              }
+            ]
+          }
+        },
+        "609": {
+          "json": {
+            "states": [
+              {
+                "clip": "pbaldeAction",
+                "playing": true,
+                "weight": -1,
+                "speed": 1,
+                "loop": true,
+                "shouldReset": false
+              }
+            ]
+          }
+        },
+        "66052": {
+          "json": {
+            "states": [
+              {
+                "clip": "pbaldeAction",
+                "playing": true,
+                "weight": -1,
                 "speed": 1,
                 "loop": true,
                 "shouldReset": false
@@ -1537,7 +1744,7 @@
         },
         "513": {
           "json": {
-            "src": "assets/scene/Models/HLtemplate/HLtemplate.glb",
+            "src": "assets/asset-packs/iron_fence_4/HWN20_IronfFence_04.glb",
             "visibleMeshesCollisionMask": 0,
             "invisibleMeshesCollisionMask": 3
           }
@@ -1696,13 +1903,6 @@
             "invisibleMeshesCollisionMask": 3
           }
         },
-        "553": {
-          "json": {
-            "src": "assets/asset-packs/iron_fence_4/HWN20_IronfFence_04.glb",
-            "visibleMeshesCollisionMask": 0,
-            "invisibleMeshesCollisionMask": 3
-          }
-        },
         "563": {
           "json": {
             "src": "assets/asset-packs/iron_fence_4/HWN20_IronfFence_04.glb",
@@ -1762,13 +1962,6 @@
         "572": {
           "json": {
             "src": "assets/scene/Models/pilar/pilar.glb",
-            "visibleMeshesCollisionMask": 0,
-            "invisibleMeshesCollisionMask": 3
-          }
-        },
-        "573": {
-          "json": {
-            "src": "assets/asset-packs/iron_fence_4/HWN20_IronfFence_04.glb",
             "visibleMeshesCollisionMask": 0,
             "invisibleMeshesCollisionMask": 3
           }
@@ -1864,13 +2057,6 @@
             "invisibleMeshesCollisionMask": 3
           }
         },
-        "588": {
-          "json": {
-            "src": "assets/asset-packs/grave_04/HWN20_Grave_04.glb",
-            "visibleMeshesCollisionMask": 0,
-            "invisibleMeshesCollisionMask": 3
-          }
-        },
         "589": {
           "json": {
             "src": "assets/scene/Models/wallshelf/wallshelf.glb",
@@ -1885,9 +2071,37 @@
             "invisibleMeshesCollisionMask": 3
           }
         },
-        "592": {
+        "594": {
           "json": {
-            "src": "assets/scene/Models/pblade/pblade.glb",
+            "src": "assets/Models/KILLERHOUSE_/KILLERHOUSE_.glb",
+            "visibleMeshesCollisionMask": 0,
+            "invisibleMeshesCollisionMask": 3
+          }
+        },
+        "595": {
+          "json": {
+            "src": "assets/asset-packs/iron_fence_4/HWN20_IronfFence_04.glb",
+            "visibleMeshesCollisionMask": 0,
+            "invisibleMeshesCollisionMask": 3
+          }
+        },
+        "596": {
+          "json": {
+            "src": "assets/Models/fplank/fplank.glb",
+            "visibleMeshesCollisionMask": 0,
+            "invisibleMeshesCollisionMask": 3
+          }
+        },
+        "597": {
+          "json": {
+            "src": "assets/Models/fplank/fplank.glb",
+            "visibleMeshesCollisionMask": 0,
+            "invisibleMeshesCollisionMask": 3
+          }
+        },
+        "598": {
+          "json": {
+            "src": "assets/Models/fplank/fplank.glb",
             "visibleMeshesCollisionMask": 0,
             "invisibleMeshesCollisionMask": 3
           }
@@ -1920,6 +2134,20 @@
             "invisibleMeshesCollisionMask": 3
           }
         },
+        "604": {
+          "json": {
+            "src": "assets/Models/fplank/fplank.glb",
+            "visibleMeshesCollisionMask": 0,
+            "invisibleMeshesCollisionMask": 3
+          }
+        },
+        "605": {
+          "json": {
+            "src": "assets/scene/Models/carpet/carpet.glb",
+            "visibleMeshesCollisionMask": 0,
+            "invisibleMeshesCollisionMask": 3
+          }
+        },
         "606": {
           "json": {
             "src": "assets/asset-packs/ambient_sound_-_market/ambient_sound.glb",
@@ -1939,6 +2167,20 @@
             "src": "assets/asset-packs/ambient_sound_-_market/ambient_sound.glb",
             "visibleMeshesCollisionMask": 1,
             "invisibleMeshesCollisionMask": 0
+          }
+        },
+        "609": {
+          "json": {
+            "src": "assets/Models/pblade2/pblade2.glb",
+            "visibleMeshesCollisionMask": 0,
+            "invisibleMeshesCollisionMask": 3
+          }
+        },
+        "66052": {
+          "json": {
+            "src": "assets/Models/pblade2/pblade2.glb",
+            "visibleMeshesCollisionMask": 0,
+            "invisibleMeshesCollisionMask": 3
           }
         }
       }
@@ -1963,7 +2205,7 @@
         },
         "513": {
           "json": {
-            "value": "Template"
+            "value": "Iron Fence 4_5"
           }
         },
         "514": {
@@ -2081,11 +2323,6 @@
             "value": "Iron Fence 4_3_4"
           }
         },
-        "553": {
-          "json": {
-            "value": "Iron Fence 4_2_3_4"
-          }
-        },
         "554": {
           "json": {
             "value": "Iron Fences"
@@ -2139,11 +2376,6 @@
         "572": {
           "json": {
             "value": "pilar.glb_7"
-          }
-        },
-        "573": {
-          "json": {
-            "value": "Iron Fence 4_2_3_4_6"
           }
         },
         "574": {
@@ -2211,11 +2443,6 @@
             "value": "Grave 04_3"
           }
         },
-        "588": {
-          "json": {
-            "value": "Grave 04_4"
-          }
-        },
         "589": {
           "json": {
             "value": "wallshelf"
@@ -2226,9 +2453,29 @@
             "value": "Grave 04_5"
           }
         },
-        "592": {
+        "594": {
           "json": {
-            "value": "pblade.glb"
+            "value": "KILLERHOUSE_.glb"
+          }
+        },
+        "595": {
+          "json": {
+            "value": "Iron Fence 4_11"
+          }
+        },
+        "596": {
+          "json": {
+            "value": "fplank.glb"
+          }
+        },
+        "597": {
+          "json": {
+            "value": "fplank.glb_2"
+          }
+        },
+        "598": {
+          "json": {
+            "value": "fplank.glb_3"
           }
         },
         "599": {
@@ -2256,6 +2503,16 @@
             "value": "Iron Fence 4_2_4_5_6"
           }
         },
+        "604": {
+          "json": {
+            "value": "fplank.glb_4"
+          }
+        },
+        "605": {
+          "json": {
+            "value": "carpet_3"
+          }
+        },
         "606": {
           "json": {
             "value": "Ambient Sound - footsteps"
@@ -2269,6 +2526,16 @@
         "608": {
           "json": {
             "value": "Ambient Sound - Market"
+          }
+        },
+        "609": {
+          "json": {
+            "value": "pblade2.glb"
+          }
+        },
+        "66052": {
+          "json": {
+            "value": "pblade2.glb_2"
           }
         }
       }
@@ -2478,9 +2745,9 @@
         "serializationType": "map"
       },
       "data": {
-        "0": {
+        "66052": {
           "json": {
-            "gizmo": 0
+            "gizmo": 1
           }
         }
       }
@@ -2531,11 +2798,11 @@
                 "entity": 0,
                 "open": true,
                 "children": [
-                  513,
                   589,
                   586,
                   585,
                   584,
+                  605,
                   583,
                   512,
                   514,
@@ -2552,7 +2819,6 @@
                   530,
                   526,
                   587,
-                  588,
                   539,
                   590,
                   528,
@@ -2560,7 +2826,13 @@
                   532,
                   534,
                   540,
-                  592
+                  594,
+                  596,
+                  597,
+                  598,
+                  604,
+                  609,
+                  66052
                 ]
               },
               {
@@ -2577,10 +2849,6 @@
               },
               {
                 "entity": 514,
-                "children": []
-              },
-              {
-                "entity": 513,
                 "children": []
               },
               {
@@ -2614,7 +2882,6 @@
               },
               {
                 "entity": 527,
-                "open": true,
                 "children": [
                   525,
                   521,
@@ -2646,19 +2913,15 @@
                 "children": []
               },
               {
-                "entity": 553,
-                "children": []
-              },
-              {
                 "entity": 554,
                 "open": true,
                 "children": [
                   569,
                   550,
                   551,
+                  513,
+                  595,
                   552,
-                  553,
-                  573,
                   574,
                   575,
                   576,
@@ -2669,6 +2932,7 @@
               },
               {
                 "entity": 569,
+                "open": true,
                 "children": [
                   568
                 ]
@@ -2719,10 +2983,6 @@
               },
               {
                 "entity": 572,
-                "children": []
-              },
-              {
-                "entity": 573,
                 "children": []
               },
               {
@@ -2853,10 +3113,6 @@
                 "children": []
               },
               {
-                "entity": 588,
-                "children": []
-              },
-              {
                 "entity": 590,
                 "children": []
               },
@@ -2865,7 +3121,43 @@
                 "children": []
               },
               {
-                "entity": 592,
+                "entity": 513,
+                "children": []
+              },
+              {
+                "entity": 594,
+                "children": []
+              },
+              {
+                "entity": 595,
+                "children": []
+              },
+              {
+                "entity": 596,
+                "children": []
+              },
+              {
+                "entity": 597,
+                "children": []
+              },
+              {
+                "entity": 598,
+                "children": []
+              },
+              {
+                "entity": 604,
+                "children": []
+              },
+              {
+                "entity": 605,
+                "children": []
+              },
+              {
+                "entity": 609,
+                "children": []
+              },
+              {
+                "entity": 66052,
                 "children": []
               }
             ]
@@ -3007,9 +3299,6 @@
         "552": {
           "json": {}
         },
-        "553": {
-          "json": {}
-        },
         "554": {
           "json": {}
         },
@@ -3067,9 +3356,6 @@
         "572": {
           "json": {}
         },
-        "573": {
-          "json": {}
-        },
         "574": {
           "json": {}
         },
@@ -3109,16 +3395,25 @@
         "587": {
           "json": {}
         },
-        "588": {
-          "json": {}
-        },
         "589": {
           "json": {}
         },
         "590": {
           "json": {}
         },
-        "592": {
+        "594": {
+          "json": {}
+        },
+        "595": {
+          "json": {}
+        },
+        "596": {
+          "json": {}
+        },
+        "597": {
+          "json": {}
+        },
+        "598": {
           "json": {}
         },
         "599": {
@@ -3136,6 +3431,12 @@
         "603": {
           "json": {}
         },
+        "604": {
+          "json": {}
+        },
+        "605": {
+          "json": {}
+        },
         "606": {
           "json": {}
         },
@@ -3143,6 +3444,12 @@
           "json": {}
         },
         "608": {
+          "json": {}
+        },
+        "609": {
+          "json": {}
+        },
+        "66052": {
           "json": {}
         }
       }
@@ -3814,7 +4121,7 @@
       }
     },
     {
-      "name": "inspector::SceneMetadata-v4",
+      "name": "inspector::SceneMetadata-v5",
       "jsonSchema": {
         "type": "object",
         "properties": {
@@ -4140,6 +4447,14 @@
               "type": "boolean",
               "serializationType": "boolean"
             }
+          },
+          "hideLandscapeTerrain": {
+            "type": "boolean",
+            "serializationType": "optional",
+            "optionalJsonSchema": {
+              "type": "boolean",
+              "serializationType": "boolean"
+            }
           }
         },
         "serializationType": "map"
@@ -4147,7 +4462,7 @@
       "data": {
         "0": {
           "json": {
-            "name": "Death House",
+            "name": "Killer House",
             "description": "This scene is based on the Spooky House Template",
             "thumbnail": "assets/images/autogenerated-thumbnail.jpg",
             "ageRating": "A",
@@ -4270,7 +4585,8 @@
               "fixedTime": 79200
             },
             "creator": "",
-            "disableNearbyVoiceChat": false
+            "disableNearbyVoiceChat": false,
+            "hideLandscapeTerrain": false
           }
         }
       }

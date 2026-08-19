@@ -49,13 +49,34 @@ const PlayerStats = engine.defineComponent('spooky::player-stats', {
 })
 
 // One entity per MY OWN candle station (13, one per CANDLE_POOL cluster
-// point), synced individually — on request: personal/private objectives,
-// but everyone can see AND light everybody's candles. `lit` is written by
-// WHOEVER lights it (owner or a helper) — a false->true flip is a safe,
-// order-independent write (no read-modify-write race a shared bitmask would
-// have, since the only thing that ever happens to it is "become true").
-// `active`/`offsetBucket` are only ever written by the OWNING client (me),
-// so they have no concurrent-writer race to worry about at all.
+// point).
+//
+// PRIVATE TO THE OWNER, both ways. You can only light your own, and now you
+// can only SEE your own: no client renders another client's station in any
+// state, lit or unlit (see syncStationVisuals in gameLoop.ts). Week 2
+// playtest feedback drove this — testers couldn't tell which candles were
+// theirs, and another player's flame standing at the same cluster point read
+// as an objective that had either already been done or was refusing to
+// respond. With this rule there is exactly one kind of candle in the world
+// and every one of them is yours.
+//
+// EVERY FIELD HERE IS WRITTEN ONLY BY THE CLIENT THAT OWNS THE STATION,
+// `lit` included. That single property is what makes the whole candle system
+// safe and easy to reason about — there is no concurrent write anywhere in
+// it, no ordering to get right, and no way for one player's round to reach
+// into another's.
+//
+// The syncEntity call below is now doing nothing visible, since nobody reads
+// anyone else's stations. It is left in deliberately rather than removed:
+// flipping shared flames back on is a one-line change in gameLoop.ts's
+// syncStationVisuals while this stays, and the traffic is a handful of
+// booleans on a component that only changes when a candle is lit or a round
+// resets. Drop it if the private rule is confirmed to be permanent.
+// (An earlier version let ANY player flip `lit` on ANY candle. The write
+// itself was race-free, but it meant the first player to reach a candle
+// removed it from everyone else's ritual — and since each player draws
+// exactly the number of candles they need, a player whose candles were taken
+// could be left unable to finish the round at all.)
 //
 // I create exactly MY OWN CANDLE_POOL.length of these, once, at init — never anyone else's.
 // With no host and no election (see this file's header), that's what avoids
@@ -69,9 +90,15 @@ const PlayerStats = engine.defineComponent('spooky::player-stats', {
 // PlayerStats sidesteps that entirely.
 const CandleStation = engine.defineComponent('spooky::candle-station', {
   index: Schemas.Int, // which CANDLE_POOL cluster point (0..N-1)
-  offsetBucket: Schemas.Int, // CANDLE_OFFSET_BUCKETS index, so my candles don't render on top of another owner's
-  active: Schemas.Boolean, // is this one of MY drawn candles this round (vs sitting out, unlit and hidden)
-  lit: Schemas.Boolean
+  // CANDLE_OFFSET_BUCKETS index. Originally this kept two owners' candles at
+  // the same cluster point from rendering on top of each other; with private
+  // candles there is nothing to overlap with anymore, so all it still buys is
+  // that two players working "the same" spot stand half a metre apart instead
+  // of inside each other. Kept for that, and because shared visibility needs
+  // it again if it ever comes back.
+  offsetBucket: Schemas.Int,
+  active: Schemas.Boolean, // is this one of MY drawn candles this round (vs sitting out, hidden)
+  lit: Schemas.Boolean // burning
 })
 
 const myStationEntities: Entity[] = []
@@ -106,34 +133,57 @@ export function createMyCandleStations(count: number, offsetBucket: number): Ent
   return myStationEntities.slice()
 }
 
-export function isMyCandleStation(entity: Entity): boolean {
-  return myStationEntities.includes(entity)
-}
-
-export interface RemoteCandleStation {
+export interface MyCandleStation {
   entity: Entity
   index: number
   offsetBucket: number
   active: boolean
   lit: boolean
-  mine: boolean
 }
 
-/** Every candle station that currently exists — MINE plus every other connected player's. */
-export function allCandleStations(): RemoteCandleStation[] {
-  const out: RemoteCandleStation[] = []
-  for (const [entity, data] of engine.getEntitiesWith(CandleStation)) {
-    out.push({ entity, index: data.index, offsetBucket: data.offsetBucket, active: data.active, lit: data.lit, mine: myStationEntities.includes(entity) })
+/**
+ * MY OWN candle stations, and only mine — the complete set gameLoop.ts
+ * renders.
+ *
+ * Candles are private now (playtest feedback: testers couldn't tell which
+ * candles were theirs, and other players' flames read as objectives that
+ * silently refused to respond). Nothing in the scene draws or reads another
+ * player's station anymore, so this deliberately iterates myStationEntities
+ * directly rather than engine.getEntitiesWith(CandleStation): the cost is a
+ * fixed CANDLE_POOL.length per frame instead of that times however many
+ * players are connected.
+ *
+ * Their stations still arrive over the wire and still sit in the engine —
+ * see the note on CandleStation above for why the sync is left in place.
+ */
+export function myCandleStations(): MyCandleStation[] {
+  const out: MyCandleStation[] = []
+  for (const entity of myStationEntities) {
+    const data = CandleStation.getOrNull(entity)
+    if (data === null) continue
+    out.push({ entity, index: data.index, offsetBucket: data.offsetBucket, active: data.active, lit: data.lit })
   }
   return out
 }
 
-/** Anyone can light anyone's candle, on request — a safe idempotent flip regardless of who calls it. */
-export function lightCandleStation(entity: Entity) {
+/**
+ * Light one of MY OWN candles. Ignores any entity that isn't mine — the
+ * caller already only ever picks from my own stations, and this makes "a
+ * station is written only by its owner" a property of this module rather
+ * than something every caller has to keep remembering.
+ */
+export function setMyStationLit(entity: Entity) {
+  if (!myStationEntities.includes(entity)) return
   if (CandleStation.has(entity)) CandleStation.getMutable(entity).lit = true
 }
 
-/** Owner-only: (re)draw which of MY OWN stations are active this round, and reset all of mine back to unlit. */
+/**
+ * Owner-only: (re)draw which of MY OWN stations stand in the world this
+ * round, and snuff them all back out. Nothing else can write these, so once
+ * drawn they are guaranteed to stay standing and lightable for the rest of
+ * my round — no other player's progress or round reset can take one of my
+ * candles away from me.
+ */
 export function setMyStationsForRound(activeIndices: Set<number>) {
   for (const e of myStationEntities) {
     if (!CandleStation.has(e)) continue

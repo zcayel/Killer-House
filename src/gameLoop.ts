@@ -3,30 +3,50 @@
  *
  * Every connected player has their OWN full copy of the CANDLE_POOL
  * stations, nudged apart by a small per-owner offset (CANDLE_OFFSET_BUCKETS
- * in config.ts) so different players' candles at the "same" spot don't
- * render on top of each other. Each round, each player's OWN pool
+ * in config.ts) so two players working the "same" spot aren't standing
+ * inside each other. Each round, each player's OWN pool
  * independently draws a random subset of RITUAL_CANDLES_REQUIRED to be
- * "active" — this just controls how many candles are actually live/visible
- * at once (pacing/spread), not who gets credit. Every player sees every
- * OTHER player's candles too, and credit for lighting ANY of them — mine or
- * someone else's — always goes to whoever personally channels it (on
- * request: "whatever candle they see, when it's lit it adds to their own
- * score"), tracked as a simple local count of candles I've personally lit
- * this round. A candle's lit state is genuinely synced (see the
- * CandleStation component in multiplayer.ts), not a one-off event, so a
- * player joining mid-round sees the real current state immediately rather
- * than only future changes.
+ * "active" — this just controls how many candles are actually live at once
+ * (pacing/spread).
  *
- * WIN:      personally light RITUAL_CANDLES_REQUIRED candles — any of
- *           them, from any player's pool — and a portal appears near you.
- *           Step into it to win immediately, or ignore it and it wins for
- *           you automatically after PORTAL_WIN_TIMEOUT_SECONDS.
- * DEFEATED: lose all ROUND_HEARTS (every death costs one), or the timer
- *           dies — but never once your portal has appeared; by then you've
- *           already earned the win and just need to reach it.
+ * YOUR CANDLES ARE YOUR OWN — ALL OF THEM, ALWAYS. You can only ever light
+ * your own stations, and now you can only ever SEE your own: another
+ * player's candle is never drawn on your screen in any state, burning or
+ * dark. So one player's ritual can never take a location away from
+ * another's, and two players working the same spot are simply working two
+ * different candles that neither of them can see the other half of.
+ *
+ * That collapses the reading rule to a single line, which is the whole of
+ * what a player has to understand about candles:
+ *   - EVERY CANDLE YOU CAN SEE IS YOURS. Dark means you still have to light
+ *     it; lit means you already did. Nothing on screen belongs to anyone
+ *     else, so there is never a candle in front of you that quietly ignores
+ *     your hold, and never a flame that looks like progress you didn't make.
+ *
+ * (This replaced a shared-flames rule where other players' LIT candles were
+ * drawn — Week 2 testers couldn't tell whose candles were whose, and a
+ * neighbour's flame at the same cluster point read either as an objective
+ * already done or as one refusing to respond. Their light was pretty; it
+ * cost more than it was worth.)
+ *
+ * The fairness guarantee falls straight out of that: the
+ * RITUAL_CANDLES_REQUIRED stations I draw for myself stay standing for my
+ * whole round, and I am the only client that can write to any of them, so I
+ * always have exactly enough candles to finish no matter what everybody else
+ * does.
+ *
+ * WIN:      light all RITUAL_CANDLES_REQUIRED of your own candles, then WALK
+ *           TO THE PORTAL in the back yard and step into it. Nothing wins the
+ *           round for you — the portal opening is the last objective, not the
+ *           ending. You are invulnerable from the moment it appears, so the
+ *           walk is a victory lap, not another gauntlet.
+ * DEFEATED: lose all ROUND_HEARTS (every death costs one), or the timer runs
+ *           out. Hearts stop counting against you once the portal is up (you
+ *           can't die then anyway), but the CLOCK does not — dawdling on the
+ *           way to the exit can still lose the round.
  *
  * Lighting a candle is a CHANNEL: walk within range of any unlit active
- * candle (mine or someone else's) and HOLD the interact button (left click
+ * candle (they are all yours) and HOLD the interact button (left click
  * on PC; the mobile client's own on-screen interact button — both map to
  * IA_POINTER) for CANDLE_CHANNEL_SECONDS while the progress bar fills. No
  * aiming at the candle is needed — proximity alone picks which one, holding
@@ -52,12 +72,19 @@ import {
   ColliderLayer,
   LightSource,
   VisibilityComponent,
+  ParticleSystem,
   InputAction,
   inputSystem,
+  PointerEventType,
   pointerEventsSystem,
+  InputModifier,
+  VirtualCamera,
+  MainCamera,
+  raycastSystem,
+  RaycastQueryType,
   Entity
 } from '@dcl/sdk/ecs'
-import { Vector3, Color3, Color4 } from '@dcl/sdk/math'
+import { Vector3, Color3, Color4, Quaternion } from '@dcl/sdk/math'
 import { movePlayerTo } from '~system/RestrictedActions'
 import {
   CANDLE_POOL,
@@ -65,6 +92,23 @@ import {
   RITUAL_CANDLES_REQUIRED,
   RITUAL_CANDLES_ROUND1,
   RITUAL_CANDLE_SCALE,
+  CANDLE_SHADOWS_ENABLED,
+  CANDLE_FLICKER_RATE,
+  CANDLE_FLICKER_JITTER_RATE,
+  CANDLE_FLICKER_DEPTH,
+  CANDLE_SMOKE_ENABLED,
+  CANDLE_SMOKE_TEXTURE,
+  CANDLE_SMOKE_HEIGHT,
+  CANDLE_SMOKE_RATE,
+  CANDLE_SMOKE_MAX,
+  CANDLE_SMOKE_LIFETIME,
+  CANDLE_SMOKE_RISE,
+  CANDLE_SMOKE_CONE_ANGLE,
+  CANDLE_SMOKE_CONE_RADIUS,
+  CANDLE_SMOKE_SIZE_START,
+  CANDLE_SMOKE_SIZE_END,
+  CANDLE_SMOKE_ALPHA,
+  CANDLE_HOVER_MAX_DISTANCE,
   ROUND_SECONDS,
   ROUND_HEARTS,
   CANDLE_CHANNEL_SECONDS,
@@ -73,22 +117,30 @@ import {
   WIN_RESET_SECONDS,
   CANDLE_GLOW_INTENSITY,
   CANDLE_GLOW_RANGE,
+  CHANNEL_GLOW_MAX_INTENSITY,
+  CHANNEL_GLOW_RANGE,
   CANDLE_CORE_GLOW_INTENSITY,
   CANDLE_CORE_GLOW_RANGE,
   MODEL_CANDLE_UNLIT,
   MODEL_CANDLE_LIT,
   PORTAL_POSITION,
   PORTAL_ENTRY_DELAY_SECONDS,
-  PORTAL_WIN_TIMEOUT_SECONDS,
   PORTAL_RADIUS,
   PORTAL_HEIGHT_OFFSET,
   PORTAL_COLOR,
   PORTAL_GLOW_INTENSITY,
   PORTAL_GLOW_RANGE,
+  LAST_CANDLE_PREVIEW_SECONDS,
+  LAST_CANDLE_STUCK_SECONDS,
+  LAST_CANDLE_PREVIEW_BACK,
+  LAST_CANDLE_PREVIEW_UP,
+  LAST_CANDLE_PREVIEW_TRANSITION_SECONDS,
+  LAST_CANDLE_PREVIEW_MIN_DIST,
+  LAST_CANDLE_PREVIEW_TURN_DEGREES,
   SPAWN_POSITION,
   SPAWN_ROTATION
 } from './config'
-import { gameStarted, isPlayerDead, onPlayerDeath, setQuestInvulnerable, grantSpawnGrace } from './gameState'
+import { gameStarted, isPlayerDead, onPlayerDeath, setQuestInvulnerable, grantSpawnGrace, setCameraLockInvulnerable } from './gameState'
 import { playerPosition } from './playerTracker'
 import { knifeCollected } from './quest'
 import { playSoundAt, SOUND_CANDLE_LIGHT, SOUND_CANDLE_LIGHTING_START, SOUND_PORTAL_APPEAR, SOUND_VICTORY } from './sounds'
@@ -97,11 +149,12 @@ import {
   readRemoteStats,
   bus,
   createMyCandleStations,
-  allCandleStations,
-  lightCandleStation,
+  myCandleStations,
+  setMyStationLit,
   setMyStationsForRound,
   myOffsetBucketIndex
 } from './multiplayer'
+import { setSkeletonsForRound } from './enemies/skeletons'
 import { pushToast } from './notifications'
 import { getPlayer } from '@dcl/sdk/players'
 import { addSafeSystem } from './safeSystem'
@@ -135,7 +188,7 @@ export let lastWinWasBest = false // did the latest win beat the previous person
 export let lastWinDelta = 0 // latest win time minus previous best (negative = faster); 0 on first win
 export const bestWinTimes: number[] = [] // fastest rituals, ascending, top 5
 export let portalReady = false
-export let portalCountdown = 0
+export let portalOpenSeconds = 0
 let roundNumber = 1 // 1 = first round (5 candles), 2+ = standard (7 candles)
 
 export interface RankEntry {
@@ -165,22 +218,50 @@ export function escapeRanking(): RankEntry[] {
 // the active lighting channel (null = not lighting anything)
 export let channelProgress: number | null = null
 let channelTarget: { station: Entity; root: Entity } | null = null
+let channelGlow: Entity | null = null
 
-/** Local render state for one candle station (mine or someone else's) — keyed by its synced CandleStation entity. */
-interface RenderedStation {
-  station: Entity // the synced multiplayer.ts CandleStation entity this mirrors
-  root: Entity
-  body: Entity
-  glow: Entity | null // wide room-fill point-light, only exists while lit
-  coreGlow: Entity | null // tight, brighter halo right at the flame, only exists while lit
-  visibleAsActive: boolean // what the LOCAL visuals currently show — compared each frame against synced truth
-  visibleAsLit: boolean
+/** Build-up glow on the candle itself while holding — grows with progress, so the candle answers "is this working" without the player needing to check the HUD. */
+function updateChannelGlow(root: Entity, progress: number) {
+  if (channelGlow === null) {
+    channelGlow = engine.addEntity()
+    Transform.create(channelGlow, { position: Vector3.create(0, FLAME_LIGHT_HEIGHT * RITUAL_CANDLE_SCALE, 0), parent: root })
+    LightSource.create(channelGlow, {
+      type: LightSource.Type.Point({}),
+      active: true,
+      color: FLAME_COLOR,
+      intensity: 0,
+      range: CHANNEL_GLOW_RANGE,
+      shadow: false
+    })
+  }
+  LightSource.getMutable(channelGlow).intensity = CHANNEL_GLOW_MAX_INTENSITY * Math.min(1, progress)
 }
 
-// Every station currently known about — mine (created in initGameLoop) plus
-// every other connected player's (discovered lazily as their synced data
-// arrives). Visuals are built here on first sight and then just kept in
-// sync every frame; see syncStationVisuals().
+function clearChannelGlow() {
+  if (channelGlow !== null) {
+    engine.removeEntity(channelGlow)
+    channelGlow = null
+  }
+}
+
+/** Local render state for one of MY candle stations — keyed by its CandleStation entity. */
+interface RenderedStation {
+  station: Entity // the multiplayer.ts CandleStation entity this mirrors
+  root: Entity
+  body: Entity
+  targetable: boolean // PointerEvents currently registered on the body — i.e. drawn, unlit, and wearing the hover outline
+  glow: Entity | null // wide room-fill point-light, only exists while lit
+  coreGlow: Entity | null // tight, brighter halo right at the flame, only exists while lit
+  shown: boolean // what the LOCAL visuals currently show — compared each frame against the station's state
+  visibleAsLit: boolean
+  flickerPhase: number // per-candle random offset so lit candles don't all pulse in lockstep
+  smoke: Entity | null // wisp above the flame; built once and toggled, never destroyed (see buildSmoke)
+}
+
+// My own stations, and only mine (created in initGameLoop) — no other
+// player's candle is ever drawn, so nothing else can end up in here. Visuals
+// are built on first sight and then just kept in sync every frame; see
+// syncStationVisuals().
 const rendered = new Map<Entity, RenderedStation>()
 
 export function getCandlesRequired(): number {
@@ -205,7 +286,7 @@ function shuffledIndices(n: number): number[] {
  * CANDLE_POOL in config.ts). An earlier version of this function ran a
  * raycast probe to auto-detect buried/floating spots, but the house's
  * visible meshes carry zero collision (visibleMeshesCollisionMask: 0 on the
- * HLtemplate GltfContainer) — the probe could only ever hit the coarse
+ * house GltfContainer, dh_new.glb) — the probe could only ever hit the coarse
  * invisible collision proxy, which doesn't track each room's real floor
  * height closely enough to judge "buried" reliably. It reported all 13 spots
  * unreachable on every single round, always fell back to the full pool
@@ -228,18 +309,110 @@ function assignRitualCandles() {
   const activeIndices = new Set([...guaranteed, ...remaining].slice(0, needed))
 
   // Owner-only write (see multiplayer.ts) — sets which of MY stations are
-  // active this round and resets all of mine back to unlit. Every other
-  // client picks up the change the exact same way they pick up anyone
-  // else's station state: via syncStationVisuals() reading
-  // allCandleStations(). Nothing here is local-only anymore — that's the
-  // point (on request: everyone sees everybody's candles).
+  // active this round and snuffs all of mine back out. syncStationVisuals()
+  // picks the change up on the next frame the same way it picks up any
+  // station state. These `needed` stations of mine now stay standing for my
+  // whole round, and no other client can write to them, which is what
+  // guarantees I always have enough candles to finish regardless of what
+  // everyone else is doing.
   setMyStationsForRound(activeIndices)
+
+  // The yard scales with the round too: one skeleton for the 5-candle
+  // introduction, two from the 7-candle round on. Pushed rather than pulled —
+  // see setSkeletonsForRound for why skeletons.ts must not import this module.
+  setSkeletonsForRound(needed)
+}
+
+// PBParticleSystem's BlendMode and SimulationSpace are `const enum`s in the
+// SDK's generated protobuf types. Const enums do not survive every TS build
+// configuration intact, and this project compiles through the Creator Hub's
+// toolchain rather than a tsconfig anyone here controls — so the wire values
+// are written out instead of imported, the same way CAMERA_TYPE_THIRD_PERSON is
+// in effects/deathEffects.ts. Shape has a real helper (ParticleSystem.Shape),
+// so that one is used properly below.
+const PS_BLEND_ALPHA = 0 // PBParticleSystem_BlendMode.PSB_ALPHA
+const PS_SPACE_WORLD = 1 // PBParticleSystem_SimulationSpace.PSS_WORLD
+
+/**
+ * The wisp of smoke above a candle's flame.
+ *
+ * BUILT ONCE PER CANDLE AND THEN ONLY TOGGLED — unlike the two lights, which
+ * are created and destroyed on every light/snuff. Two reasons it has to work
+ * that way round:
+ *
+ *   - Destroying an emitter kills the particles already in the air with it, so
+ *     snuffing a candle would make its smoke vanish in the same frame as the
+ *     flame. Setting active=false stops NEW particles while the ones already
+ *     rising finish their lifetime, which is what smoke does when a flame goes
+ *     out.
+ *   - A round snuffs and relights the whole pool. Churning a particle system
+ *     that often is exactly the kind of per-round entity traffic this scene has
+ *     already been burned by on the mobile client.
+ *
+ * simulationSpace is WORLD so a puff, once emitted, stays where the air left
+ * it instead of being dragged around by its parent's transform.
+ */
+function buildSmoke(parent: Entity): Entity {
+  const smoke = engine.addEntity()
+  Transform.create(smoke, {
+    position: Vector3.create(0, CANDLE_SMOKE_HEIGHT * RITUAL_CANDLE_SCALE, 0),
+    parent
+  })
+  ParticleSystem.create(smoke, {
+    active: false, // nothing emits until the candle is actually lit
+    rate: CANDLE_SMOKE_RATE,
+    maxParticles: CANDLE_SMOKE_MAX,
+    lifetime: CANDLE_SMOKE_LIFETIME,
+    loop: true,
+    // No gravity at all, and a constant upward force instead. Smoke off a
+    // candle is buoyant, not ballistic — giving it an initial speed and letting
+    // gravity win produces a fountain, which is the classic wrong look.
+    gravity: 0,
+    additionalForce: Vector3.create(0, CANDLE_SMOKE_RISE, 0),
+    initialVelocitySpeed: { start: 0.04, end: 0.13 },
+    // A narrow cone off a wick-sized mouth: a candle wisp is nearly vertical
+    // and only spreads once it has risen and cooled.
+    shape: ParticleSystem.Shape.Cone({ angle: CANDLE_SMOKE_CONE_ANGLE, radius: CANDLE_SMOKE_CONE_RADIUS }),
+    initialSize: { start: CANDLE_SMOKE_SIZE_START * 0.8, end: CANDLE_SMOKE_SIZE_START * 1.25 },
+    // sizeOverTime is a MULTIPLIER on the birth size, so this is the expansion
+    // ratio rather than an absolute size — derived from the two config values
+    // so they stay the things you actually edit.
+    sizeOverTime: { start: 1, end: CANDLE_SMOKE_SIZE_END / CANDLE_SMOKE_SIZE_START },
+    // Slow roll. Billboarded, so only the Z spin is visible — it exists to stop
+    // the sprite's baked noise pattern from repeating identically on every puff.
+    rotationOverTime: Quaternion.fromEulerDegrees(0, 0, 16),
+    initialColor: {
+      start: Color4.create(0.78, 0.77, 0.74, CANDLE_SMOKE_ALPHA),
+      end: Color4.create(0.62, 0.62, 0.64, CANDLE_SMOKE_ALPHA)
+    },
+    // Multiplied over initialColor across the particle's life: full at birth,
+    // gone by the end, so a wisp thins out rather than popping.
+    colorOverTime: { start: Color4.create(1, 1, 1, 1), end: Color4.create(1, 1, 1, 0) },
+    texture: { src: CANDLE_SMOKE_TEXTURE },
+    // ALPHA, never ADD. Additive smoke over a flame brightens the very thing it
+    // is supposed to be a dark trace of.
+    blendMode: PS_BLEND_ALPHA,
+    billboard: true,
+    simulationSpace: PS_SPACE_WORLD
+  })
+  return smoke
+}
+
+/** Emit or stop emitting, leaving particles already in the air to finish. */
+function setSmoking(r: RenderedStation, on: boolean) {
+  if (r.smoke === null) return
+  const ps = ParticleSystem.getMutableOrNull(r.smoke)
+  if (ps !== null && ps.active !== on) ps.active = on
 }
 
 function addFlame(r: RenderedStation) {
   if (r.glow !== null) return
-  // swap to the original bake — the model's own flame appears on the wick
-  GltfContainer.createOrReplace(r.body, { src: MODEL_CANDLE_LIT })
+  // swap to the original bake — the model's own flame appears on the wick.
+  // Mask repeated on purpose: createOrReplace rebuilds the whole component,
+  // so leaving it off here would silently strip the candle's pointer collider
+  // and with it the hover outline (see buildRenderedStation).
+  GltfContainer.createOrReplace(r.body, { src: MODEL_CANDLE_LIT, visibleMeshesCollisionMask: ColliderLayer.CL_POINTER, invisibleMeshesCollisionMask: ColliderLayer.CL_NONE })
+  setSmoking(r, true)
 
   const glow = engine.addEntity()
   Transform.create(glow, { position: Vector3.create(0, FLAME_LIGHT_HEIGHT * RITUAL_CANDLE_SCALE, 0), parent: r.root })
@@ -249,7 +422,17 @@ function addFlame(r: RenderedStation) {
     color: FLAME_COLOR,
     intensity: CANDLE_GLOW_INTENSITY,
     range: CANDLE_GLOW_RANGE,
-    shadow: false
+    // Shadows on the ROOM-FILL light only, on request — this is the one that
+    // reaches furniture and walls, so it's the one that makes a lit candle
+    // throw the room into relief. The core halo below deliberately stays
+    // shadowless: two shadow-casting lights 6cm apart on the same flame would
+    // double every edge for no visible gain, at twice the cost.
+    //
+    // Shadow-casting point lights are the single most expensive thing in this
+    // scene's lighting budget and there can be RITUAL_CANDLES_REQUIRED of them
+    // burning at once. If mobile framerate drops after this, flip it back —
+    // it's one boolean, and nothing else depends on it.
+    shadow: CANDLE_SHADOWS_ENABLED
   })
   r.glow = glow
 
@@ -271,7 +454,9 @@ function addFlame(r: RenderedStation) {
 }
 
 function removeFlame(r: RenderedStation) {
-  GltfContainer.createOrReplace(r.body, { src: MODEL_CANDLE_UNLIT })
+  // Mask repeated — same reason as addFlame.
+  GltfContainer.createOrReplace(r.body, { src: MODEL_CANDLE_UNLIT, visibleMeshesCollisionMask: ColliderLayer.CL_POINTER, invisibleMeshesCollisionMask: ColliderLayer.CL_NONE })
+  setSmoking(r, false)
   if (r.glow !== null) {
     engine.removeEntity(r.glow)
     r.glow = null
@@ -280,6 +465,331 @@ function removeFlame(r: RenderedStation) {
     engine.removeEntity(r.coreGlow)
     r.coreGlow = null
   }
+}
+
+let flickerClock = 0
+
+/**
+ * Fast flicker for every currently-lit flame: only the wide room-fill
+ * light's range drifts, on request — the tight core halo stays fixed so the
+ * brightness right at the wick doesn't jitter. Two sine waves per candle (a
+ * quick pulse + a faster, smaller jitter on top) so it reads as flicker and
+ * not a metronome; each candle's own flickerPhase offset keeps a room full
+ * of them from pulsing in unison.
+ */
+function flameFlickerSystem(dt: number) {
+  flickerClock += dt
+  for (const r of rendered.values()) {
+    if (r.glow === null) continue
+
+    // -1 .. 1. The main wave carries most of it; the faster, smaller one on
+    // top keeps the two from ever settling into a visible beat.
+    const wave =
+      0.74 * Math.sin(flickerClock * CANDLE_FLICKER_RATE + r.flickerPhase) +
+      0.26 * Math.sin(flickerClock * CANDLE_FLICKER_JITTER_RATE + r.flickerPhase * 1.7)
+    // 1 at the peak, (1 - depth) at the trough.
+    const factor = 1 - (CANDLE_FLICKER_DEPTH * (1 - wave)) / 2
+
+    const g = LightSource.getMutable(r.glow)
+    // INTENSITY is the one that reads. This used to animate `range` alone, by
+    // about +/-18%, and the flicker was invisible — on a 34m light, changing
+    // the range only slides a falloff edge that is nowhere near the player,
+    // while the brightness they're actually looking at never moved at all.
+    // Intensity changes how bright the room is, which is what "flicker" means
+    // to anyone watching.
+    g.intensity = CANDLE_GLOW_INTENSITY * factor
+    // Range still rides along, but gently — a hard swing here makes the whole
+    // room's lit radius visibly breathe in and out, which reads as a bug.
+    g.range = CANDLE_GLOW_RANGE * (0.9 + 0.1 * factor)
+
+    // The tight core halo at the wick is deliberately NOT flickered: it sits
+    // right in front of the player while they channel, and jittering the
+    // brightness there was already rejected once as "the wax is glowing".
+  }
+}
+
+// LAST CANDLE TRACKING — see config.ts header comment. lastCandleStation
+// tracks WHICH of my own stations is currently "the last one" (so a frame
+// where the count is still 1 but it's the SAME candle as last frame doesn't
+// re-trigger anything) — the last-candle camera preview and the
+// camera preview both key off it. The beacon beam/light/chime that used to
+// live here was removed, on request, once the camera preview made
+// it redundant.
+let lastCandleStation: Entity | null = null
+
+// LAST CANDLE CAMERA PREVIEW — see config.ts header comment. Same
+// VirtualCamera swap pattern deathEffects.ts uses for its death-shake rig,
+// just with a real transition time instead of an instant cut (smoother, on
+// request), the MainCamera points at it, then hands back. Input is frozen
+// and the player is invulnerable for the same window
+// (setCameraLockInvulnerable), so a blind, motionless player can't wander
+// into a hazard or take a hit they can't see coming.
+let locationPreviewCam: Entity
+let locationPreviewTimer = 0
+/**
+ * Is the location preview on screen right now, and is it showing the PORTAL
+ * rather than a candle?
+ *
+ * Read by ui.tsx to draw the converging arrows over it. The preview camera
+ * always aims dead centre at whatever it's orbiting (updatePreviewCamera
+ * builds its rotation with lookRotation straight at previewCenter), so the
+ * UI can point at the target without knowing where it is in the world — it is
+ * always the middle of the screen.
+ */
+export let previewActive = false
+/**
+ * WHAT the preview is showing, so the UI can label it truthfully.
+ *
+ * Three call sites reach startLocationPreview and they do NOT mean the same
+ * thing. lastCandleTrackerSystem fires only when exactly one candle is left;
+ * stuckHintSystem fires after a minute of no progress and shows the NEAREST
+ * candle, which can be one of several still standing; unlockPortal shows the
+ * way out. Labelling all three "your last candle" was wrong for the middle
+ * one — and wrong in the worst direction, since it tells a struggling player
+ * they're nearly finished when they aren't.
+ */
+export type PreviewKind = 'candle' | 'lastCandle' | 'portal'
+export let previewKind: PreviewKind = 'candle'
+let previewRayAnchor: Entity
+
+// The orbit the camera sweeps through during a preview — a fixed center
+// (the candle), radius and height found once at the start (see
+// findClearCameraPose) and a start angle it turns LAST_CANDLE_PREVIEW_TURN_DEGREES
+// away from over the course of the preview. Angle convention: 0 = +Z,
+// positive turns toward +X.
+let previewCenter = Vector3.create(0, 0, 0)
+let previewRadius = 0
+let previewHeight = 0
+let previewStartAngle = 0
+
+// Tried in order until one has a clear line back to the candle — a wall or
+// piece of furniture can block the default "behind and above" angle
+// depending on where the candle happens to sit (reported: sometimes a wall
+// or model ends up between the camera and the candle). Each entry is a
+// horizontal direction plus how far back/up along it; the last one is a
+// near-overhead shot that's clear almost everywhere, as a fallback of last
+// resort — pulled back further than before (was reading as too close).
+const PREVIEW_CAMERA_CANDIDATES: { dir: Vector3; back: number; up: number }[] = [
+  { dir: Vector3.create(0, 0, 1), back: LAST_CANDLE_PREVIEW_BACK, up: LAST_CANDLE_PREVIEW_UP },
+  { dir: Vector3.create(0, 0, -1), back: LAST_CANDLE_PREVIEW_BACK, up: LAST_CANDLE_PREVIEW_UP },
+  { dir: Vector3.create(1, 0, 0), back: LAST_CANDLE_PREVIEW_BACK, up: LAST_CANDLE_PREVIEW_UP },
+  { dir: Vector3.create(-1, 0, 0), back: LAST_CANDLE_PREVIEW_BACK, up: LAST_CANDLE_PREVIEW_UP },
+  { dir: Vector3.create(0, 0, 1), back: 1.4, up: 2.2 }
+]
+
+/**
+ * Finds an unobstructed orbit (radius + height + starting angle) around
+ * targetPos (a candle, or the portal). For each PREVIEW_CAMERA_CANDIDATES
+ * entry, casts a ray FROM the target toward that candidate's position: if
+ * something's in the way, the radius/height are scaled down proportionally
+ * to land just short of it — still along the same direction, so that closer
+ * point is guaranteed clear too — as long as what's left over still clears
+ * LAST_CANDLE_PREVIEW_MIN_DIST (a usable shot, not the camera sitting on top
+ * of the target). Falls through to the next candidate otherwise, and to the
+ * plain default offset if every candidate was too tight, so the preview
+ * never silently shows nothing. The camera only orbits AROUND this one
+ * resolved radius/height — the sweep itself isn't re-checked point-by-point
+ * for new obstructions.
+ */
+function findClearCameraPose(targetPos: Vector3): { radius: number; height: number; angle: number } {
+  const rayOrigin = Vector3.create(targetPos.x, targetPos.y + 0.6, targetPos.z)
+  Transform.createOrReplace(previewRayAnchor, { position: rayOrigin })
+
+  for (const c of PREVIEW_CAMERA_CANDIDATES) {
+    const offset = Vector3.create(c.dir.x * c.back, c.up, c.dir.z * c.back)
+    const desiredDist = Vector3.length(offset)
+    const dir = Vector3.normalize(offset)
+
+    let clearDist = desiredDist
+    try {
+      const result = raycastSystem.registerRaycast(
+        previewRayAnchor,
+        raycastSystem.globalDirectionOptions({
+          queryType: RaycastQueryType.RQT_HIT_FIRST,
+          direction: dir,
+          maxDistance: desiredDist,
+          collisionMask: ColliderLayer.CL_PHYSICS
+        })
+      )
+      const hit = result?.hits?.[0]
+      if (hit?.position !== undefined) {
+        const hitDist = Math.hypot(hit.position.x - rayOrigin.x, hit.position.y - rayOrigin.y, hit.position.z - rayOrigin.z)
+        clearDist = hitDist - 0.3 // pull back off the wall a little
+      }
+    } catch (_) {
+      continue // this candidate's ray failed outright — try the next one
+    }
+
+    if (clearDist >= LAST_CANDLE_PREVIEW_MIN_DIST) {
+      const scale = clearDist / desiredDist
+      return { radius: c.back * scale, height: c.up * scale, angle: Math.atan2(c.dir.x, c.dir.z) }
+    }
+  }
+
+  // Every candidate was too tight — use the plain default orbit anyway
+  // rather than show nothing.
+  return { radius: LAST_CANDLE_PREVIEW_BACK, height: LAST_CANDLE_PREVIEW_UP, angle: 0 }
+}
+
+/** Places the preview camera at its current point along the orbit, always looking at the target (a candle, or the portal). progress goes 0 (start angle) to 1 (start angle + the full turn). */
+function updatePreviewCamera(progress: number) {
+  const angle = previewStartAngle + progress * (LAST_CANDLE_PREVIEW_TURN_DEGREES * (Math.PI / 180))
+  const camPos = Vector3.create(
+    previewCenter.x + Math.sin(angle) * previewRadius,
+    previewCenter.y + previewHeight,
+    previewCenter.z + Math.cos(angle) * previewRadius
+  )
+  const dir = Vector3.normalize(Vector3.subtract(previewCenter, camPos))
+  const t = Transform.getMutable(locationPreviewCam)
+  t.position = camPos
+  t.rotation = Quaternion.lookRotation(dir)
+}
+
+/** Cuts the camera briefly to targetPos — a candle, or (see unlockPortal) the portal — orbiting it for LAST_CANDLE_PREVIEW_SECONDS. */
+function startLocationPreview(targetPos: Vector3) {
+  const pose = findClearCameraPose(targetPos)
+  previewCenter = Vector3.create(targetPos.x, targetPos.y + 0.6, targetPos.z)
+  previewRadius = pose.radius
+  previewHeight = pose.height
+  previewStartAngle = pose.angle
+  updatePreviewCamera(0) // set the starting pose immediately — no default-transform flash before the next tick
+
+  MainCamera.getOrCreateMutable(engine.CameraEntity).virtualCameraEntity = locationPreviewCam
+  InputModifier.createOrReplace(engine.PlayerEntity, { mode: InputModifier.Mode.Standard({ disableAll: true }) })
+  setCameraLockInvulnerable(true)
+  locationPreviewTimer = LAST_CANDLE_PREVIEW_SECONDS
+  previewActive = true
+  stuckTimer = 0 // whatever triggered this cut, the player just got a fresh look — restart their minute
+}
+
+function endLocationPreview() {
+  locationPreviewTimer = 0
+  previewActive = false
+  MainCamera.getOrCreateMutable(engine.CameraEntity).virtualCameraEntity = undefined
+  InputModifier.createOrReplace(engine.PlayerEntity, { mode: InputModifier.Mode.Standard({ disableAll: false }) })
+  setCameraLockInvulnerable(false)
+}
+
+/**
+ * Long enough after the cut that the press which caused it can't also dismiss
+ * it. Small — the point of the skip is that it's instant.
+ */
+const PREVIEW_SKIP_GRACE_SECONDS = 0.35
+
+/**
+ * Has the player asked to be given their camera back?
+ *
+ * NOT ESC, though that is what was asked for. Esc is reserved by the explorer
+ * for its own menu and is never delivered to a scene — there is no InputAction
+ * for it, so a HUD line promising it would be promising something that cannot
+ * happen. Click/tap is the one control that exists on both desktop and mobile,
+ * with E as a keyboard alternative, and the HUD names whichever applies.
+ *
+ * InputModifier's disableAll only stops LOCOMOTION (walk/jog/run/jump/emote —
+ * see PBInputModifier_StandardInput), so scene input actions still arrive
+ * normally while the preview has the player frozen. That is what makes this
+ * work at all.
+ */
+function previewSkipPressed(): boolean {
+  return (
+    inputSystem.isTriggered(InputAction.IA_POINTER, PointerEventType.PET_DOWN) ||
+    inputSystem.isTriggered(InputAction.IA_PRIMARY, PointerEventType.PET_DOWN) ||
+    inputSystem.isTriggered(InputAction.IA_SECONDARY, PointerEventType.PET_DOWN)
+  )
+}
+
+/**
+ * Finds MY OWN last remaining unlit active candle (if there's exactly one) —
+ * only cares about "exactly one left", since with two or more standing
+ * there's no single answer to point at, and with zero the round's already
+ * won. The moment a candle becomes the last one, the camera cuts to it
+ * briefly (startLocationPreview). lastCandleStation is kept between frames
+ * so the preview fires once per NEW last candle rather than every frame.
+ */
+function lastCandleTrackerSystem(dt: number) {
+  if (!gameStarted || roundPhase !== 'playing') {
+    lastCandleStation = null
+    if (locationPreviewTimer > 0) endLocationPreview()
+    return
+  }
+
+  if (locationPreviewTimer > 0) {
+    locationPreviewTimer -= dt
+    // Skip out of it. The camera lock takes the player's controls away for
+    // several seconds, and a player who has already seen what they're being
+    // shown should not have to sit through the rest of the orbit. Ends the
+    // whole thing immediately — control, camera and invulnerability all come
+    // back through the same endLocationPreview() the timer would have called.
+    const elapsed = LAST_CANDLE_PREVIEW_SECONDS - locationPreviewTimer
+    if (elapsed > PREVIEW_SKIP_GRACE_SECONDS && previewSkipPressed()) {
+      endLocationPreview()
+    } else if (locationPreviewTimer <= 0) {
+      endLocationPreview()
+    } else {
+      updatePreviewCamera(1 - locationPreviewTimer / LAST_CANDLE_PREVIEW_SECONDS)
+    }
+  }
+
+  let unlitCount = 0
+  let lastUnlit: RenderedStation | null = null
+  for (const r of rendered.values()) {
+    if (!r.shown || r.visibleAsLit) continue
+    unlitCount++
+    lastUnlit = r
+  }
+
+  if (unlitCount !== 1 || lastUnlit === null) {
+    lastCandleStation = null
+    return
+  }
+
+  if (lastCandleStation !== lastUnlit.station) {
+    lastCandleStation = lastUnlit.station
+    // lastCandleStation always updates above regardless;
+    // the cut itself only fires if nothing's already showing — guards the
+    // rare same-frame overlap with stuckHintSystem below.
+    if (locationPreviewTimer <= 0) {
+      previewKind = 'lastCandle'
+      startLocationPreview(Transform.get(lastUnlit.root).position)
+    }
+  }
+}
+
+let stuckTimer = 0
+
+/**
+ * If a full minute passes with no candle lit at all — not "down to the last
+ * one", just genuinely stuck — the camera also cuts, to whichever of the
+ * player's own remaining candles is nearest right now. Same mechanism as
+ * lastCandleTrackerSystem, different trigger: this one can fire with several
+ * candles still standing, not just the final one.
+ */
+function stuckHintSystem(dt: number) {
+  if (!gameStarted || roundPhase !== 'playing' || isPlayerDead || portalReady) {
+    stuckTimer = 0
+    return
+  }
+
+  stuckTimer += dt
+  if (stuckTimer < LAST_CANDLE_STUCK_SECONDS) return
+  if (locationPreviewTimer > 0) return // something's already being shown
+
+  let nearest: RenderedStation | null = null
+  let nearestDist = Infinity
+  for (const r of rendered.values()) {
+    if (!r.shown || r.visibleAsLit) continue
+    const p = Transform.get(r.root).position
+    const d = Math.hypot(playerPosition.x - p.x, playerPosition.y - p.y, playerPosition.z - p.z)
+    if (d < nearestDist) {
+      nearestDist = d
+      nearest = r
+    }
+  }
+  if (nearest === null) return // nothing left to point at
+
+  // Nearest, not last — several candles can still be standing here.
+  previewKind = 'candle'
+  startLocationPreview(Transform.get(nearest.root).position)
 }
 
 function buildRenderedStation(stationEntity: Entity, pos: Vector3): RenderedStation {
@@ -294,47 +804,115 @@ function buildRenderedStation(stationEntity: Entity, pos: Vector3): RenderedStat
     scale: Vector3.create(RITUAL_CANDLE_SCALE, RITUAL_CANDLE_SCALE, RITUAL_CANDLE_SCALE),
     parent: root
   })
-  GltfContainer.create(body, { src: MODEL_CANDLE_UNLIT })
-  VisibilityComponent.create(body, { visible: false }) // hidden until syncStationVisuals learns it's active
+  // CL_POINTER on the model's own VISIBLE meshes is what earns the client's
+  // native hover outline — the same treatment the doors get, and the reason
+  // they read as interactive without this scene drawing anything itself.
+  // Never CL_PHYSICS: the candle must stay walk-through, not an obstruction
+  // in a dark room. MUST be repeated in addFlame/removeFlame, which
+  // createOrReplace this component to swap the lit/unlit bake and would
+  // otherwise silently drop the mask.
+  //
+  // invisibleMeshesCollisionMask MUST be set explicitly too, and that is the
+  // half this was missing: it DEFAULTS TO CL_PHYSICS, so naming only the
+  // visible mask left the .glb's own invisible collider mesh solid. The
+  // comment above was true of the visible geometry and wrong about the
+  // candle overall — players were walking into an invisible box at every
+  // station. Same fix the tombstones already carry (deathEffects.ts) and the
+  // wall spikes (wallSpikes.ts).
+  GltfContainer.create(body, { src: MODEL_CANDLE_UNLIT, visibleMeshesCollisionMask: ColliderLayer.CL_POINTER, invisibleMeshesCollisionMask: ColliderLayer.CL_NONE })
+  VisibilityComponent.create(body, { visible: false }) // hidden until syncStationVisuals decides it should show
 
-  return { station: stationEntity, root, body, glow: null, coreGlow: null, visibleAsActive: false, visibleAsLit: false }
+  return {
+    station: stationEntity,
+    root,
+    body,
+    // Nothing is registered on the body yet — syncStationVisuals owns this
+    // from here and turns it on the first time the candle is drawn and unlit.
+    targetable: false,
+    glow: null,
+    coreGlow: null,
+    shown: false,
+    visibleAsLit: false,
+    flickerPhase: Math.random() * Math.PI * 2,
+    smoke: CANDLE_SMOKE_ENABLED ? buildSmoke(root) : null
+  }
 }
 
 /**
- * Keeps every known station's visuals (mine AND every other connected
- * player's) in sync with their real synced state, building a station's
- * visuals the first time it's seen (including a remote player's, whenever
- * their sync data arrives). Purely visual — on request, credit for a
- * candle now always goes to whoever personally channels it (see
- * lightStation()), not to whichever pool it happened to come from, so this
- * no longer needs to track ownership at all.
+ * Keeps my stations' visuals in sync, building a station's visuals the first
+ * time it's seen.
+ *
+ * This is where the reading rule in this file's header is actually enforced,
+ * and it is now enforced by what this loop never looks at: myCandleStations()
+ * returns only my own, so no other player's candle can reach the render path
+ * at all — not as a dark candle offering a hold that would silently refuse,
+ * and not as a flame that reads like progress the player didn't make. Every
+ * field read here is written only by me, so nothing in this loop can race
+ * anything.
  */
 function syncStationVisuals() {
-  for (const s of allCandleStations()) {
+  for (const s of myCandleStations()) {
     let r = rendered.get(s.entity)
     if (r === undefined) {
-      // s.index is network-sourced — it was written by whichever client
-      // created this station, using THEIR loaded CANDLE_POOL.length. If a
-      // player is ever connected on a different build with a different
-      // CANDLE_POOL size, an out-of-range index would otherwise throw here
-      // every single frame forever (addSafeSystem only dedupes the LOG, not
-      // the throw itself — see safeSystem.ts), silently freezing the entire
-      // game loop for every client, not just the one with the bad station.
-      // Skip that one station rather than risk taking everything else down.
+      // s.index is mine and always in range, but the component is still a
+      // synced one and this runs every frame — an out-of-range index would
+      // throw here forever (addSafeSystem only dedupes the LOG, not the
+      // throw itself — see safeSystem.ts), silently freezing the entire game
+      // loop. Skip the one station rather than risk taking everything down.
       const spot = CANDLE_POOL[s.index]
       if (spot === undefined) continue
       const off = CANDLE_OFFSET_BUCKETS[s.offsetBucket] ?? Vector3.Zero()
       r = buildRenderedStation(s.entity, Vector3.create(spot.pos.x + off.x, spot.pos.y + off.y, spot.pos.z + off.z))
       rendered.set(s.entity, r)
     }
-    if (s.active !== r.visibleAsActive) {
-      r.visibleAsActive = s.active
-      VisibilityComponent.createOrReplace(r.body, { visible: s.active })
+    // Drawn whenever it's one of this round's draw. Lit or unlit, it's mine.
+    const show = s.active
+    if (show !== r.shown) {
+      r.shown = show
+      VisibilityComponent.createOrReplace(r.body, { visible: show })
     }
-    if (s.lit !== r.visibleAsLit) {
-      r.visibleAsLit = s.lit
-      if (s.lit) addFlame(r)
-      else removeFlame(r) // the owner reset their round — snuff it back out for everyone watching
+    // Tied to `show`, not to s.lit alone: a flame carries two real point
+    // lights, and this scene has a history of stray lights costing frames.
+    // Belt-and-braces against ever leaving one burning on a candle that
+    // isn't being drawn.
+    const burning = show && s.lit
+    if (burning !== r.visibleAsLit) {
+      r.visibleAsLit = burning
+      if (burning) addFlame(r)
+      else removeFlame(r) // round reset snuffed it
+    }
+    // THE HOVER OUTLINE — the same one the doors have. Registering
+    // PointerEvents on an entity whose GLTF carries a CL_POINTER collider is
+    // all it takes; the client draws the highlight itself, on the candle's
+    // real silhouette, and it costs no geometry of our own.
+    //
+    // Only ever registered on a candle that is DRAWN and UNLIT, so the outline
+    // and its "Hold to light" prompt can never appear on a station sitting out
+    // the round or on one already burning. The click callback is deliberately
+    // empty — lighting is proximity + hold (candleChannelSystem), and a 3D tap
+    // is exactly what didn't register reliably on mobile. This is hover
+    // affordance only, the same pattern the tombstone hover uses.
+    const targetable = show && !s.lit
+    if (targetable !== r.targetable) {
+      r.targetable = targetable
+      if (targetable) {
+        pointerEventsSystem.onPointerDown(
+          {
+            entity: r.body,
+            // The client prepends the icon for the bound input itself — a
+            // left-mouse glyph on desktop, the touch/interact glyph on
+            // mobile — so the text must not name a device. IA_POINTER is what
+            // maps to both (same binding the doors and the channel use).
+            opts: { button: InputAction.IA_POINTER, hoverText: 'Come closer to light', maxDistance: CANDLE_HOVER_MAX_DISTANCE }
+          },
+          () => {}
+        )
+      } else {
+        // Paired with the registration above so entries can't pile up — the
+        // helper PUSHES rather than replaces (see refreshTombstoneHover in
+        // effects/deathEffects.ts for where that already bit this project).
+        pointerEventsSystem.removeOnPointerDown(r.body)
+      }
     }
   }
 }
@@ -354,9 +932,12 @@ function distToRendered(r: RenderedStation): number {
  * IA_POINTER is left click on PC and the mobile client's own on-screen
  * interact button — same action, same code path, no platform branch needed.
  * Releasing the button (or walking out of range, or dying) cancels outright:
- * the fill resets to 0, it does not pause and resume. Eligibility is just
- * "active and unlit" — ANY visible candle, mine or someone else's, since
- * anyone can light anyone's (on request).
+ * the fill resets to 0, it does not pause and resume.
+ *
+ * Eligibility is "standing and unlit" — the "mine" half of the old rule is
+ * gone because it can no longer fail: nothing but my own stations is ever
+ * rendered (see syncStationVisuals), so every dark candle the player can
+ * walk up to is one this will pick up.
  */
 function candleChannelSystem(dt: number) {
   if (!inputSystem.isPressed(InputAction.IA_POINTER)) {
@@ -368,7 +949,7 @@ function candleChannelSystem(dt: number) {
     let best: { station: Entity; root: Entity } | null = null
     let bestD = CHANNEL_MAX_DISTANCE
     for (const r of rendered.values()) {
-      if (!r.visibleAsActive || r.visibleAsLit) continue
+      if (!r.shown || r.visibleAsLit) continue
       const d = distToRendered(r)
       if (d <= bestD) {
         bestD = d
@@ -383,29 +964,26 @@ function candleChannelSystem(dt: number) {
 
   const target = channelTarget
   const r = rendered.get(target.station)
-  // Also cancels cleanly if someone else lights this exact candle out from
-  // under me mid-channel — r.visibleAsLit is only ever true after
-  // syncStationVisuals() observes the real synced flip, so this can't race
-  // ahead of what everyone else will also see. Re-checking !r.visibleAsActive
-  // here (not just at acquisition) matters because it's someone ELSE'S round
-  // that can end and reset mid-channel — the owner's client can deactivate
-  // this exact station out from under me at any moment, independent of
-  // anything happening on my own client.
-  if (r === undefined || isPlayerDead || !r.visibleAsActive || r.visibleAsLit || distToRendered(r) > CHANNEL_MAX_DISTANCE + 0.4) {
+  // Nothing another player does can land in here: the target is always one of
+  // MY stations, and every field of a station is written only by its owner.
+  // So a hold can only ever end the way the player themselves ended it —
+  // released, walked off, or died. No stolen candles, no cancelled fills.
+  if (r === undefined || isPlayerDead || !r.shown || r.visibleAsLit || distToRendered(r) > CHANNEL_MAX_DISTANCE + 0.4) {
     cancelChannel()
     return
   }
   channelProgress = (channelProgress ?? 0) + dt
+  updateChannelGlow(r.root, channelProgress / CANDLE_CHANNEL_SECONDS)
   if (channelProgress >= CANDLE_CHANNEL_SECONDS) {
     lightStation(target.station, Transform.get(r.root).position)
     cancelChannel()
   }
 }
 
-/** Is the player currently in range of ANY unlit active candle (mine or someone else's)? Drives the "hold to light" HUD prompt. */
+/** Is the player in range of one of THEIR OWN unlit candles? Drives the "hold to light" HUD prompt — same eligibility as the channel itself, so the prompt never appears on a candle that wouldn't respond. */
 export function canLightNearby(): boolean {
   for (const r of rendered.values()) {
-    if (!r.visibleAsActive || r.visibleAsLit) continue
+    if (!r.shown || r.visibleAsLit) continue
     if (distToRendered(r) <= CHANNEL_MAX_DISTANCE) return true
   }
   return false
@@ -414,25 +992,33 @@ export function canLightNearby(): boolean {
 function cancelChannel() {
   channelTarget = null
   channelProgress = null
+  clearChannelGlow()
 }
 
 function lightStation(stationEntity: Entity, pos: Vector3) {
-  // A safe, order-independent flip regardless of whose candle this is (see
-  // the CandleStation comment in multiplayer.ts) — syncStationVisuals()
-  // picks up the change for every client, so everyone sees it light.
-  lightCandleStation(stationEntity)
+  stuckTimer = 0 // real progress — the stuck-for-a-minute clock starts over
+  // Owner-only write — this is always one of my own stations, so I'm the only
+  // client that ever writes it and there's no race to think about. It IS
+  // synced, though: syncStationVisuals() on every client puts the flame up,
+  // so the whole house sees it burn and gets the light from it.
+  setMyStationLit(stationEntity)
   playSoundAt(SOUND_CANDLE_LIGHT, pos, 0.8)
-  // "Someone has lit a candle" — everyone in the house sees it. bus.emit
-  // never echoes back to me, so my own toast is pushed locally alongside it.
+
+  // Credit is trivially unambiguous now: the only candles I can light are my
+  // own, and nobody else can light them, so a lit candle of mine is always
+  // exactly one candle of my own progress. Incremented before the toast so
+  // the count it reports is the one the player just reached, not the one
+  // before it.
+  candlesLit += 1
+  // My own toast shows MY progress toward MY win condition — on request,
+  // "1/5 candles lit to escape" rather than a generic "you lit a candle".
+  // Other players still just hear that I lit one (their own progress isn't
+  // affected by mine, so a count of MY candles wouldn't mean anything to
+  // them) — bus.emit never echoes back to me, so this doesn't double up.
   const myName = getPlayer()?.name ?? 'A player'
-  pushToast(`${myName} lit a candle`)
+  pushToast(`${candlesLit}/${getCandlesRequired()} candles lit to escape`)
   bus.emit('sh_candlelit', { name: myName })
 
-  // Credit always goes to whoever personally channelled it (on request) —
-  // not to whichever pool the candle happened to come from. Any visible
-  // active candle, mine or someone else's, counts toward MY OWN progress
-  // the moment I'M the one who finishes lighting it.
-  candlesLit += 1
   if (!portalReady && candlesLit >= getCandlesRequired()) unlockPortal()
 }
 
@@ -448,7 +1034,7 @@ let portalPosition: Vector3 | null = null // where the portal opened (for the wa
 function unlockPortal() {
   cancelChannel() // nothing left to channel — you've already earned the win
   portalReady = true
-  portalCountdown = PORTAL_WIN_TIMEOUT_SECONDS
+  portalOpenSeconds = 0
   // Invulnerable from this instant: every hazard gates on isInvulnerable(),
   // so this doesn't just avoid COUNTING a death against you (defeat()'s own
   // portalReady guard already did that) — it stops the death from happening
@@ -459,6 +1045,13 @@ function unlockPortal() {
   portalPosition = Vector3.create(PORTAL_POSITION.x, PORTAL_POSITION.y, PORTAL_POSITION.z)
   playSoundAt(SOUND_PORTAL_APPEAR, portalPosition, 1, 1, true) // global — on request, everyone should hear a portal/win moment regardless of distance
   pushToast('Your portal has opened in the backyard!')
+  // Same camera-cut-and-orbit reveal the last candle gets — on request,
+  // players need to know where to go after their final candle just as much
+  // as they need to know where that candle was. Already invulnerable (above)
+  // and the round's already won, so there's no risk in taking the camera for
+  // a few seconds here.
+  previewKind = 'portal'
+  startLocationPreview(portalPosition)
 
   const root = engine.addEntity()
   Transform.create(root, {
@@ -495,7 +1088,7 @@ function unlockPortal() {
       if (roundPhase !== 'playing') return
       // Same entry delay as the walk-through check below — a click
       // shouldn't be able to win instantly the moment the portal spawns.
-      if (PORTAL_WIN_TIMEOUT_SECONDS - portalCountdown < PORTAL_ENTRY_DELAY_SECONDS) return
+      if (portalOpenSeconds < PORTAL_ENTRY_DELAY_SECONDS) return
       win()
     }
   )
@@ -513,7 +1106,7 @@ function removePortal() {
   }
   portalPosition = null
   portalReady = false
-  portalCountdown = 0
+  portalOpenSeconds = 0
 }
 
 function win() {
@@ -554,8 +1147,23 @@ export function onRoundReset(cb: () => void) {
   roundResetHooks.push(cb)
 }
 
+/**
+ * "Play Again" button — lets the win/defeat screen skip the rest of its
+ * auto-continue countdown instead of forcing everyone to sit through the
+ * full WIN_RESET_SECONDS/DEFEAT_RESET_SECONDS wait. Only does anything while
+ * a round is actually over; harmless no-op if somehow called mid-round.
+ */
+export function playAgainNow() {
+  if (roundPhase === 'playing') return
+  resetRound()
+}
+
 function resetRound() {
-  if (roundNumber === 1) roundNumber = 2 // advance past the easier first round
+  // Only step up to the harder requirement after an actual WIN — losing at
+  // the easy count and trying again should stay easy, not silently get
+  // harder. Once you've won once, roundNumber never drops back to 1, so this
+  // block only ever fires the single time you graduate off round 1.
+  if (roundNumber === 1 && roundPhase === 'won') roundNumber = 2
   // Isolated per hook — combat.ts registers independent cleanup here
   // (knives back in hand); one throwing must not skip the rest or leave the
   // new round in a half-reset state.
@@ -567,11 +1175,12 @@ function resetRound() {
     }
   }
   removePortal()
-  assignRitualCandles() // a fresh random subset every run — also resets MY stations' lit state (setMyStationsForRound)
+  assignRitualCandles() // a fresh random subset every run — also snuffs all of my own candles, for every viewer
   candlesLit = 0
   hearts = ROUND_HEARTS
   roundRemaining = ROUND_SECONDS
   roundDeaths = 0
+  furthestArea = 0
   roundPhase = 'playing'
   setQuestInvulnerable(false)
 
@@ -586,6 +1195,25 @@ function resetRound() {
   grantSpawnGrace()
 }
 
+// FURTHEST AREA REACHED — a coarse Y-based read of yard / ground floor /
+// upstairs, on request (playtest feedback: unsuccessful players need to see
+// SOME progress, not just candle count). Bands come from CANDLE_POOL's own
+// real coordinates: yard candles sit near y=0, ground-floor ones ~2.6-4,
+// upstairs ~8.4-8.5 — thresholds split the gaps between those clusters.
+const AREA_LABELS = ['the yard', 'the ground floor', 'upstairs']
+let furthestArea = 0
+
+function areaIndexForY(y: number): number {
+  if (y >= 6) return 2
+  if (y >= 2) return 1
+  return 0
+}
+
+/** Furthest area reached this round, for the defeat screen's "you got this far" readout. */
+export function furthestAreaLabel(): string {
+  return AREA_LABELS[furthestArea]
+}
+
 function loopSystem(dt: number) {
   if (!gameStarted) return
 
@@ -595,6 +1223,9 @@ function loopSystem(dt: number) {
     if (phaseCountdown <= 0) resetRound()
     return
   }
+
+  const areaIdx = areaIndexForY(playerPosition.y)
+  if (areaIdx > furthestArea) furthestArea = areaIdx
 
   // Keep every station's visuals (mine AND everyone else's) in sync with
   // current synced state.
@@ -618,18 +1249,35 @@ function loopSystem(dt: number) {
     }
   }
 
-  // the portal's courtesy auto-win timer
+  // THE PORTAL NEVER WINS FOR YOU. It used to: PORTAL_WIN_TIMEOUT_SECONDS after
+  // it opened, win() fired whether or not the player had gone anywhere near it.
+  // Removed on request — you have to actually reach the way out now.
+  //
+  // That courtesy was quietly deleting the last beat of the run. The portal is
+  // parked in one fixed spot in the back yard (PORTAL_POSITION), so crossing to
+  // it IS the finale, and a timer that hands you the win for standing still
+  // turns that into a cutscene you wait out.
+  //
+  // THERE IS NOW NO DEADLINE ON THE WALK, and that is deliberate rather than an
+  // oversight. Once the portal is up the round clock is frozen (see the timer
+  // above) and defeat() refuses to fire, so nothing ends the round except
+  // actually reaching the exit — it waits for the player as long as they need.
+  // They are also invulnerable from the instant it opens, so the walk cannot
+  // kill them either. If a deadline is wanted later, unfreezing that clock is
+  // the one-line version, but note it would also make the score honest in a way
+  // it currently isn't: "escape time" presently stops at the last candle rather
+  // than at the exit.
+  //
+  // Not a soft-lock risk: portalPosition is assigned from PORTAL_POSITION at the
+  // top of unlockPortal(), before any entity is built, so even if the portal's
+  // visuals fail to spawn the walk-through check below still works.
   if (portalReady) {
-    portalCountdown -= dt
-    if (portalCountdown <= 0) {
-      win()
-      return
-    }
+    portalOpenSeconds += dt
     // Walk-through win: stand in the portal to escape — no tap needed (mobile
     // can't tap the 3D portal). Tapping it still works, gated by the same
-    // PORTAL_ENTRY_DELAY_SECONDS below — on request, neither path can enter
-    // until the portal's been up a full 5 seconds.
-    if (portalPosition !== null && PORTAL_WIN_TIMEOUT_SECONDS - portalCountdown >= PORTAL_ENTRY_DELAY_SECONDS) {
+    // PORTAL_ENTRY_DELAY_SECONDS — on request, neither path can enter until the
+    // portal's been up a full 5 seconds.
+    if (portalPosition !== null && portalOpenSeconds >= PORTAL_ENTRY_DELAY_SECONDS) {
       const d = Math.hypot(playerPosition.x - portalPosition.x, playerPosition.z - portalPosition.z)
       if (d <= PORTAL_RADIUS + 1) {
         win()
@@ -650,6 +1298,19 @@ export function initGameLoop() {
   createMyCandleStations(CANDLE_POOL.length, myOffsetBucketIndex(CANDLE_OFFSET_BUCKETS.length))
   assignRitualCandles()
 
+  // Virtual camera for the last-candle preview cut — same pattern as
+  // deathEffects.ts's shake rig, just repositioned/aimed fresh every time
+  // startLocationPreview() fires instead of every frame. A real transition
+  // time (was an instant Time(0) cut) so the swap reads as a smooth pan
+  // rather than a snap, on request, both heading to the candle and back.
+  locationPreviewCam = engine.addEntity()
+  Transform.create(locationPreviewCam)
+  VirtualCamera.create(locationPreviewCam, {
+    defaultTransition: { transitionMode: VirtualCamera.Transition.Time(LAST_CANDLE_PREVIEW_TRANSITION_SECONDS) }
+  })
+  previewRayAnchor = engine.addEntity()
+  Transform.create(previewRayAnchor)
+
   onPlayerDeath(() => {
     if (roundPhase !== 'playing') return
     roundDeaths += 1
@@ -665,6 +1326,9 @@ export function initGameLoop() {
   })
 
   addSafeSystem(loopSystem, 'loopSystem')
+  addSafeSystem(flameFlickerSystem, 'flameFlickerSystem')
+  addSafeSystem(lastCandleTrackerSystem, 'lastCandleTrackerSystem')
+  addSafeSystem(stuckHintSystem, 'stuckHintSystem')
 }
 
 /** 0..1 fill for the channel bar (null = no channel running). */

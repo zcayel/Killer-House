@@ -23,6 +23,14 @@ export const SOUND_HEARTBEAT = 'assets/sounds/heartbeat.mp3' // CC0, freesound #
 export const SOUND_BONE_RATTLE = 'assets/sounds/bone_rattle.mp3' // CC0, freesound #202102
 export const SOUND_CANDLE_LIGHT = 'assets/sounds/candle_lit.mp3' // plays once a candle is fully lit
 export const SOUND_CANDLE_LIGHTING_START = 'assets/sounds/candle_lighting_start.mp3' // plays the instant a channel begins
+// Synthesised rather than sourced — see forcefield-source/make_forcefield_sound.py
+// for the five layers and how to regenerate it. Replaces the spike-thrust
+// stand-in the barrier used to borrow.
+export const SOUND_FORCE_FIELD = 'assets/sounds/forcefield_hit.wav'
+// The swinging plank landing. Synthesised (wood-source/make_wood_impact.py):
+// contact crack + the board's own struck-bar modes + a floor thump. Played
+// twice per landing — the hit, then a quieter settle — see SWING_TRAP_PLANK_*.
+export const SOUND_WOOD_IMPACT = 'assets/sounds/wood_impact.wav'
 export const SOUND_PORTAL_APPEAR = 'assets/sounds/portal_appear.mp3'
 export const SOUND_VICTORY = 'assets/sounds/victory.mp3'
 
