@@ -5,9 +5,12 @@
  *  - The camera snaps to a virtual camera and shakes violently for a beat
  *    (amplitude decays to zero), then control returns to the normal camera
  *    while the death screen plays out.
- *  - A blood pool decal is stamped on the floor where you died. Stains
- *    persist across respawns as "you died here" markers; the oldest is
- *    removed once there are more than BLOOD_MAX_STAINS.
+ *  - A blood pool decal is stamped on the floor where you died — on the
+ *    floor PLANE beneath the death, not at the height the player died at, so
+ *    dying on the chandelier or mid-jump doesn't leave one hanging in the
+ *    air (see floorBeneath). Stains are local to you, persist across
+ *    respawns as "you died here" markers, and the oldest is removed once
+ *    there are more than BLOOD_MAX_STAINS.
  *
  * The shake camera is NOT parented to the player and carries no fixed
  * head-height/facing assumption — cameraShake() snapshots wherever the
@@ -24,6 +27,7 @@ import {
   engine,
   Transform,
   MainCamera,
+  CameraMode,
   VirtualCamera,
   MeshRenderer,
   MeshCollider,
@@ -41,7 +45,19 @@ import {
 } from '@dcl/sdk/ecs'
 import { Vector3, Quaternion } from '@dcl/sdk/math'
 import { syncEntity } from '@dcl/sdk/network'
-import { DEATH_SHAKE_SECONDS, DEATH_SHAKE_AMPLITUDE, BLOOD_POOL_TEXTURE, BLOOD_MAX_STAINS, TOMBSTONE_MODELS } from '../config'
+import { getPlayer } from '@dcl/sdk/players'
+import {
+  DEATH_SHAKE_SECONDS,
+  DEATH_SHAKE_AMPLITUDE,
+  BLOOD_POOL_TEXTURE,
+  BLOOD_MAX_STAINS,
+  TOMBSTONE_MODELS,
+  TOMBSTONE_LIFETIME_SECONDS,
+  HOUSE_RECT,
+  FLOOR_LEVELS_Y,
+  FLOOR_SNAP_TOLERANCE,
+  YARD_FLOOR_Y
+} from '../config'
 import { onPlayerDeath, isPlayerDead } from '../gameState'
 import { playerPosition } from '../playerTracker'
 import { otherPlayerIds } from '../multiplayer'
@@ -55,6 +71,9 @@ let shakeTimer = 0
 // shake jitters around this, not around a fixed rig position.
 let shakeBasePos = Vector3.create(0, 0, 0)
 let shakeBaseRot = Quaternion.Identity()
+// Where the PLAYER was when the shake started. The rig follows their
+// translation from here — see the note in shakeSystem on why it must.
+let shakeStartPlayer = Vector3.create(0, 0, 0)
 
 // While dead, the avatar is hidden and a tombstone stands where you fell.
 // The hide-avatars area is created ONCE and never deleted - deleting the
@@ -99,12 +118,14 @@ function refreshExcludeIds() {
   AvatarModifierArea.getMutable(hideAvatarArea).excludeIds = ids
 }
 
-// Cause + death-time, synced onto the tombstone itself (on request: hovering
-// ANY tombstone — mine or another player's — should show how/when they
-// died). diedAt is real wall-clock (Date.now()/1000, unix seconds) rather
-// than a local elapsed-counter specifically so a REMOTE viewer's "died Xs
-// ago" is computed correctly too, not just for the player it happened to.
+// Name + cause + death-time, synced onto the tombstone itself (on request:
+// hovering ANY tombstone — mine or another player's — should show whose
+// grave it is and how/when they died). diedAt is real wall-clock
+// (Date.now()/1000, unix seconds) rather than a local elapsed-counter
+// specifically so a REMOTE viewer's "died Xs ago" is computed correctly too,
+// not just for the player it happened to.
 const TombstoneInfo = engine.defineComponent('spooky::tombstone-info', {
+  name: Schemas.String,
   cause: Schemas.String,
   diedAt: Schemas.Int
 })
@@ -125,9 +146,33 @@ function formatElapsed(seconds: number): string {
   return `${h}h ${m % 60}m`
 }
 
-function hoverTextFor(cause: string, diedAt: number): string {
-  const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - diedAt)
-  return `${cause}\nDied ${formatElapsed(elapsed)} ago`
+/**
+ * m:ss under a minute becomes plain seconds — "0:47" reads as a stopwatch,
+ * "47s" reads as a warning, and this line is a warning.
+ */
+function formatCountdown(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `${m}:${s < 10 ? '0' : ''}${s}`
+}
+
+/** Wall-clock seconds. Real time, not scene time, so it stays right across pauses and for remote viewers. */
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000)
+}
+
+/** Seconds until this grave fades, floored at 0. */
+function tombstoneRemaining(diedAt: number): number {
+  return Math.max(0, TOMBSTONE_LIFETIME_SECONDS - Math.max(0, nowSeconds() - diedAt))
+}
+
+function hoverTextFor(name: string, cause: string, diedAt: number): string {
+  const elapsed = Math.max(0, nowSeconds() - diedAt)
+  // Both halves are derived from diedAt, which is REAL wall-clock stored on the
+  // synced component — so a player looking at someone else's grave sees the
+  // same countdown its owner does, without anything extra being synced.
+  return `${name}\n${cause}\nDied ${formatElapsed(elapsed)} ago\nFades in ${formatCountdown(tombstoneRemaining(diedAt))}`
 }
 
 /**
@@ -137,9 +182,9 @@ function hoverTextFor(cause: string, diedAt: number): string {
  * would pile up duplicate entries forever, so after the first registration
  * this mutates that one entry's hoverText directly instead.
  */
-function refreshTombstoneHover(entity: Entity, cause: string, diedAt: number) {
+function refreshTombstoneHover(entity: Entity, name: string, cause: string, diedAt: number) {
   let hitbox = tombstoneHitboxes.get(entity)
-  const text = hoverTextFor(cause, diedAt)
+  const text = hoverTextFor(name, cause, diedAt)
   if (hitbox === undefined) {
     hitbox = engine.addEntity()
     Transform.create(hitbox, { position: Vector3.create(0, 0.9, 0), scale: Vector3.create(1, 1.8, 1), parent: entity })
@@ -157,13 +202,63 @@ function refreshTombstoneHover(entity: Entity, cause: string, diedAt: number) {
   }
 }
 
-/** Keeps every known tombstone's hover text current — mine and every other player's. Called periodically, not every frame (a "died Xs ago" doesn't need to be sub-second accurate). */
-function tombstoneHoverSystem(dt: number) {
+/** Removes a grave and the local hover hitbox parented to it. */
+function removeTombstone(t: Entity) {
+  const hitbox = tombstoneHitboxes.get(t)
+  if (hitbox !== undefined) {
+    engine.removeEntity(hitbox)
+    tombstoneHitboxes.delete(t)
+  }
+  engine.removeEntity(t)
+}
+
+/**
+ * Ticks every known tombstone: refreshes its hover card and retires it once
+ * TOMBSTONE_LIFETIME_SECONDS is up.
+ *
+ * ONE SECOND, not every frame. That is the countdown's own resolution — it is
+ * displayed in whole seconds, so a faster tick would burn work to redraw
+ * identical text — and it bounds how long an expired grave can linger to under
+ * a second, which nobody can perceive.
+ *
+ * ONLY THE OWNER RETIRES A GRAVE. `tombstones` holds just the ones this client
+ * created, and removing a synced entity syncs that removal — so if every client
+ * expired every grave it could see, the same entity would be removed several
+ * times over. Remote clients only clean up their own local hitbox, which is
+ * what the second loop does: the hitbox is parented to a synced entity that can
+ * disappear underneath it at any moment, and orphaned colliders would go on
+ * offering hover text over an empty patch of floor.
+ */
+function tombstoneSystem(dt: number) {
   hoverRefreshTimer -= dt
   if (hoverRefreshTimer > 0) return
   hoverRefreshTimer = 1
+
   for (const [entity, info] of engine.getEntitiesWith(TombstoneInfo)) {
-    refreshTombstoneHover(entity, info.cause, info.diedAt)
+    refreshTombstoneHover(entity, info.name, info.cause, info.diedAt)
+  }
+
+  // Mine, expired.
+  for (let i = tombstones.length - 1; i >= 0; i--) {
+    const t = tombstones[i]
+    const info = TombstoneInfo.getOrNull(t)
+    if (info === null) {
+      tombstones.splice(i, 1) // already gone (round reset, or never fully built)
+      continue
+    }
+    if (tombstoneRemaining(info.diedAt) <= 0) {
+      removeTombstone(t)
+      tombstones.splice(i, 1)
+    }
+  }
+
+  // Anyone's, vanished — drop the hitbox we built for it. Deleting from a Map
+  // while iterating it is well-defined in JS, so this needs no staging array.
+  for (const [entity, hitbox] of tombstoneHitboxes) {
+    if (!TombstoneInfo.has(entity)) {
+      engine.removeEntity(hitbox)
+      tombstoneHitboxes.delete(entity)
+    }
   }
 }
 
@@ -171,21 +266,46 @@ function tombstoneHoverSystem(dt: number) {
  * A tombstone anyone in the scene can see (synced entity; its later removal
  * syncs too). Used for my own deaths and by the ghost player NPC.
  */
-export function spawnSyncedTombstone(pos: Vector3, cause: string): Entity {
+export function spawnSyncedTombstone(pos: Vector3, name: string, cause: string): Entity {
   const e = engine.addEntity()
   Transform.create(e, {
-    position: Vector3.create(pos.x, pos.y, pos.z),
+    // Stood on the floor UNDER the death, not at the death's own height. Dying
+    // mid-air — off a landing, on the chandelier, over the fence — would
+    // otherwise leave a headstone hanging in space. Same floor-level snap the
+    // blood stain uses; see floorBeneath for why this isn't a raycast.
+    position: Vector3.create(pos.x, floorBeneath(pos), pos.z),
     rotation: Quaternion.fromEulerDegrees(0, Math.random() * 360, 0)
   })
-  GltfContainer.create(e, { src: TOMBSTONE_MODELS[tombstoneIndex] })
+  // WALK-THROUGH, DELIBERATELY. This prop was removed once already for getting
+  // in players' way where they died, and a solid headstone dropped on the exact
+  // spot someone is about to respawn next to — potentially in a doorway, or
+  // against the candle that killed them — is a hazard the scene invented for
+  // itself. CL_POINTER keeps the hover text working (that is what the
+  // name/cause/died-ago card is registered against) while
+  // invisibleMeshesCollisionMask 0 drops the physics collider the .glb ships
+  // with, so it can never block a step.
+  GltfContainer.create(e, {
+    src: TOMBSTONE_MODELS[tombstoneIndex],
+    visibleMeshesCollisionMask: ColliderLayer.CL_POINTER,
+    invisibleMeshesCollisionMask: 0
+  })
   tombstoneIndex = (tombstoneIndex + 1) % TOMBSTONE_MODELS.length
-  TombstoneInfo.create(e, { cause, diedAt: Math.floor(Date.now() / 1000) })
+  TombstoneInfo.create(e, { name, cause, diedAt: Math.floor(Date.now() / 1000) })
   syncEntity(e, [Transform.componentId, GltfContainer.componentId, TombstoneInfo.componentId])
   return e
 }
 
-function becomeTombstone(pos: Vector3, cause: string) {
-  tombstones.push(spawnSyncedTombstone(pos, cause))
+function becomeTombstone(pos: Vector3, name: string, cause: string) {
+  // THE HEADSTONE IS BACK (on request). It was pulled at one point for getting
+  // in the way where players died; it returns walk-through and floor-snapped
+  // (see spawnSyncedTombstone), which is what that complaint was actually
+  // about — it can be looked at, and it cannot be bumped into.
+  //
+  // Pushed onto `tombstones` so clearTombstones() can sweep it at the round
+  // reset. Deaths within a round deliberately accumulate: ROUND_HEARTS caps how
+  // many can ever exist at once, and the row of them is a readable record of
+  // where this run went wrong.
+  tombstones.push(spawnSyncedTombstone(pos, name, cause))
 
   // Move the hide-avatars zone onto the death spot AND switch its modifier
   // on. excludeIds (refreshed every 0.5s while dead) carries every other
@@ -211,24 +331,55 @@ function restoreAvatar() {
 
 /** Wipes every tombstone left from this round — called on round reset, not on individual respawn. */
 function clearTombstones() {
-  for (const t of tombstones) {
-    const hitbox = tombstoneHitboxes.get(t)
-    if (hitbox !== undefined) {
-      engine.removeEntity(hitbox)
-      tombstoneHitboxes.delete(t)
-    }
-    engine.removeEntity(t)
-  }
+  for (const t of tombstones) removeTombstone(t)
   tombstones.length = 0
+}
+
+/**
+ * The floor plane underneath a death position, so a stain lands flat on the
+ * ground instead of hanging in the air where the player happened to be — on
+ * the chandelier mid-ride, mid-jump over the spikes, or still falling.
+ *
+ * REPLACED A RAYCAST THAT NEVER WORKED. The old groundedY() cast straight
+ * down with raycastSystem.registerRaycast and read the result inline, which
+ * looks synchronous but isn't: that call CREATES the Raycast request and
+ * returns whatever RaycastResult the renderer left on the entity from a
+ * previous frame (see @dcl/ecs/dist/systems/raycast.js). swingingBlade.ts
+ * gets away with the same pattern because it polls every single frame; a
+ * stain is cast for exactly once, at the instant of death, so it read null
+ * on the first death of a session and fell back to the raw death height —
+ * and on every death after that it read the leftover hit from the PREVIOUS
+ * death's position, placing the stain at a floor height measured somewhere
+ * else in the house. Its three-mask fallback ladder was inert too: the 2nd
+ * and 3rd attempts hit `if (!raycast)` and silently reused the 1st attempt's
+ * request, so the looser collision masks were never actually tried.
+ *
+ * Snapping to FLOOR_LEVELS_Y instead is exact, frame-independent, free, and
+ * identical on mobile — see the reasoning on that constant.
+ *
+ * Outside the house footprint there is only the yard, however high up the
+ * death happened (going over the iron fence is the usual way).
+ */
+function floorBeneath(pos: Vector3): number {
+  const insideHouse =
+    pos.x >= HOUSE_RECT.minX && pos.x <= HOUSE_RECT.maxX && pos.z >= HOUSE_RECT.minZ && pos.z <= HOUSE_RECT.maxZ
+
+  if (insideHouse) {
+    for (const level of FLOOR_LEVELS_Y) {
+      if (pos.y >= level - FLOOR_SNAP_TOLERANCE) return level
+    }
+  }
+  return YARD_FLOOR_Y
 }
 
 export function spawnBloodStain(pos: Vector3) {
   const stain = engine.addEntity()
   const yaw = Math.random() * 360
   const size = 1.2 + Math.random() * 0.9
+  const groundY = floorBeneath(pos)
   Transform.create(stain, {
     // Slightly above the floor to avoid z-fighting with it
-    position: Vector3.create(pos.x, pos.y + 0.03, pos.z),
+    position: Vector3.create(pos.x, groundY + 0.03, pos.z),
     // Lay the plane flat, spun by a random yaw so no two stains look alike
     rotation: Quaternion.multiply(Quaternion.fromEulerDegrees(0, yaw, 0), Quaternion.fromEulerDegrees(90, 0, 0)),
     scale: Vector3.create(size, size, 1)
@@ -242,9 +393,13 @@ export function spawnBloodStain(pos: Vector3) {
     roughness: 1
   })
 
-  // Synced: my blood stains show on everyone's floor (and my trim of the
-  // oldest stain removes it everywhere).
-  syncEntity(stain, [Transform.componentId, MeshRenderer.componentId, Material.componentId])
+  // LOCAL, deliberately. These used to be synced, so every player's deaths
+  // stained every player's floor. Week 2 testers reported being "affected by
+  // other players' blood" — with BLOOD_MAX_STAINS per player and a house
+  // this dark, a busy scene turned into someone else's crime scene, and the
+  // one visual cue that's supposed to mean "YOU died here" meant nothing.
+  // Your own stains are the map of your own mistakes; that only works if
+  // they're all yours.
 
   stains.push(stain)
   if (stains.length > BLOOD_MAX_STAINS) {
@@ -258,15 +413,42 @@ let shakeAmp = DEATH_SHAKE_AMPLITUDE
 let shakeNatural = false // false = violent random jitter (death), true = smooth rumble (thunder)
 let shakePhase = 0
 
+// CameraType is a `const enum` inside the SDK's generated protobuf types and is
+// NOT re-exported from '@dcl/sdk/ecs', so the wire value is written out here.
+// CT_FIRST_PERSON = 0, CT_THIRD_PERSON = 1, CT_CINEMATIC = 2.
+const CAMERA_TYPE_THIRD_PERSON = 1
+// How far behind the reported camera the rig sits when the pull-back below
+// kicks in. The explorer's own third-person orbit is roughly this far back.
+const THIRD_PERSON_PULLBACK = 4.0
+// Horizontal distance under which the reported camera counts as sitting ON the
+// avatar rather than orbiting behind it.
+const HEAD_ANCHOR_TOLERANCE = 0.8
+
 /**
- * Shake the camera. natural=true gives a smooth layered-sine rumble
- * (lightning, impacts); natural=false is the violent death jitter.
+ * Shake the camera. natural=true gives the storm's two-axis rumble (lightning,
+ * impacts); natural=false is the violent death jitter.
  *
  * Snapshots the REAL camera's current position+rotation first and hands the
  * shake rig that exact pose before swapping to it, so the swap is visually
  * seamless — whatever the player was looking at is still what they're
  * looking at, just jittering, instead of snapping to a fixed head-height rig
  * facing the avatar's body.
+ *
+ * THE THIRD-PERSON PULL-BACK. This is the fix for the repeatedly-reported
+ * "camera zooms to first person when it shakes".
+ *
+ * The rig renders from wherever we put it, and we put it wherever
+ * engine.CameraEntity says the camera is. In THIRD person that report comes
+ * back anchored to the avatar's head rather than out at the orbit position, so
+ * handing it straight to the rig teleports the view from behind the avatar into
+ * its skull — which is exactly what a zoom to first person looks like.
+ *
+ * Detected rather than assumed, so this can only ever fire on the broken case:
+ * CameraMode has to say third person AND the reported camera has to be sitting
+ * on top of the player. If a client reports the orbit position properly, the
+ * distance test fails and the pose is used untouched. Pushing back along the
+ * camera's own -forward keeps the view direction identical and only restores
+ * the distance, which is the single thing that was lost.
  */
 export function cameraShake(seconds: number, amplitude: number, natural = false) {
   shakeTimer = seconds
@@ -276,8 +458,23 @@ export function cameraShake(seconds: number, amplitude: number, natural = false)
   shakePhase = 0
 
   const cam = Transform.get(engine.CameraEntity)
-  shakeBasePos = Vector3.create(cam.position.x, cam.position.y, cam.position.z)
   shakeBaseRot = Quaternion.create(cam.rotation.x, cam.rotation.y, cam.rotation.z, cam.rotation.w)
+  shakeBasePos = Vector3.create(cam.position.x, cam.position.y, cam.position.z)
+
+  const mode = CameraMode.getOrNull(engine.CameraEntity)
+  const thirdPerson = mode !== null && (mode.mode as number) === CAMERA_TYPE_THIRD_PERSON
+  const headAnchored =
+    Math.hypot(shakeBasePos.x - playerPosition.x, shakeBasePos.z - playerPosition.z) < HEAD_ANCHOR_TOLERANCE
+  if (thirdPerson && headAnchored) {
+    const forward = Vector3.rotate(Vector3.Forward(), shakeBaseRot)
+    shakeBasePos = Vector3.create(
+      shakeBasePos.x - forward.x * THIRD_PERSON_PULLBACK,
+      shakeBasePos.y - forward.y * THIRD_PERSON_PULLBACK,
+      shakeBasePos.z - forward.z * THIRD_PERSON_PULLBACK
+    )
+  }
+
+  shakeStartPlayer = Vector3.create(playerPosition.x, playerPosition.y, playerPosition.z)
   const t = Transform.getMutable(shakeCam)
   t.position = shakeBasePos
   t.rotation = shakeBaseRot
@@ -295,10 +492,25 @@ function shakeSystem(dt: number) {
   if (wasDead && !isPlayerDead) restoreAvatar()
   wasDead = isPlayerDead
 
-  // While the hide-zone is actually parked on a death spot (not underground),
-  // keep excludeIds current — a bystander could wander in, or a new player
-  // could join, during the respawn countdown.
   if (isPlayerDead) {
+    // THE ZONE FOLLOWS THE CORPSE. becomeTombstone drops it on the spot where
+    // the player died, which was fine while nothing could move a dead player —
+    // but plotBoundary.ts now pushes players back inside the fence DURING the
+    // death (that's what stopped "my avatar dies but still gets out"). A dead
+    // player shoved back inside walked straight out of a hide-box left behind
+    // at the fence line, and reappeared standing there for everyone. Reported
+    // as "I can't see the tombstone, just the avatar standing".
+    //
+    // Tracking the live position instead makes the zone correct for ANY reason
+    // a dead player moves — the seal, a respawn teleport, or anything added
+    // later — rather than only for the one that caused this.
+    const t = Transform.getMutable(hideAvatarArea)
+    t.position.x = playerPosition.x
+    t.position.y = playerPosition.y
+    t.position.z = playerPosition.z
+
+    // Keep excludeIds current too — a bystander could wander in, or a new
+    // player could join, during the respawn countdown.
     excludeRefreshTimer -= dt
     if (excludeRefreshTimer <= 0) {
       excludeRefreshTimer = 0.5
@@ -316,29 +528,68 @@ function shakeSystem(dt: number) {
     return
   }
 
-  // Strong at first, settling to nothing. Offset from the SNAPSHOT pose
-  // (shakeBasePos/Rot, captured in cameraShake) — this is why the shake
-  // doesn't drag the view back to a fixed rig position every frame.
+  // THE RIG TRAVELS WITH THE PLAYER. This is the real cause of the "camera
+  // zooms when it shakes" report, and it was NOT the jitter axes.
+  //
+  // The pose is snapshotted once when the shake starts and held for the whole
+  // duration — 1.6s for thunder. A player walking during a strike therefore
+  // walks AWAY from their own camera, which stays nailed where they were: the
+  // world slides past and everything ahead appears to pull in. A dolly, read
+  // as a zoom.
+  //
+  // Tracking the player's own translation cancels it exactly. playerPosition
+  // comes from engine.PlayerEntity, NOT from CameraEntity, which matters:
+  // while the virtual camera is active the camera entity reports the rig's own
+  // pose, so following that would feed back into itself and drift.
+  const travel = Vector3.create(
+    playerPosition.x - shakeStartPlayer.x,
+    playerPosition.y - shakeStartPlayer.y,
+    playerPosition.z - shakeStartPlayer.z
+  )
+
+  // Strong at first, settling to nothing.
   const amp = shakeAmp * (shakeTimer / shakeDuration)
-  let offset: Vector3
+
+  // NO FORWARD COMPONENT — this is why the shake used to read as a zoom.
+  //
+  // The offset used to be built in WORLD axes, so whichever way the player
+  // happened to be facing, part of every shake ran along their view direction.
+  // A 0.45m lurch toward what you're looking at is a dolly, and it was
+  // reported as the camera zooming in.
+  //
+  // Building it from the camera's own RIGHT and UP instead confines the motion
+  // to the screen plane: the view can sway and heave, but the distance to
+  // everything in front of the player never changes.
+  const right = Vector3.rotate(Vector3.Right(), shakeBaseRot)
+  const up = Vector3.rotate(Vector3.Up(), shakeBaseRot)
+
+  let sway: number
+  let heave: number
   if (shakeNatural) {
-    // layered sines = a low rolling rumble instead of harsh jitter
+    // SIDE TO SIDE, AND UP AND DOWN — two axes, one clean oscillation each (on
+    // request). This used to be two summed sines per axis, which is a smoother
+    // rumble but reads as formless shudder; a single frequency per axis is what
+    // makes the direction of the motion legible.
+    //
+    // The two rates are deliberately unrelated (≈4.1Hz lateral against ≈2.7Hz
+    // vertical) so they drift in and out of phase instead of tracing the same
+    // diagonal over and over, and the vertical is the shallower of the two —
+    // ground shock throws you sideways more than it lifts you.
     shakePhase += dt
     const p = shakePhase
-    offset = Vector3.create(
-      amp * (0.6 * Math.sin(p * 31) + 0.4 * Math.sin(p * 17 + 1.3)),
-      amp * (0.5 * Math.sin(p * 27 + 0.7) + 0.5 * Math.sin(p * 11 + 2.1)),
-      amp * (0.6 * Math.sin(p * 23 + 2.6) + 0.4 * Math.sin(p * 13 + 0.4))
-    )
+    sway = amp * Math.sin(p * 26)
+    heave = amp * 0.55 * Math.sin(p * 17)
   } else {
-    offset = Vector3.create(
-      (Math.random() - 0.5) * 2 * amp,
-      (Math.random() - 0.5) * 2 * amp,
-      (Math.random() - 0.5) * 2 * amp
-    )
+    sway = (Math.random() - 0.5) * 2 * amp
+    heave = (Math.random() - 0.5) * 2 * amp
   }
+  const offset = Vector3.create(
+    right.x * sway + up.x * heave,
+    right.y * sway + up.y * heave,
+    right.z * sway + up.z * heave
+  )
   const t = Transform.getMutable(shakeCam)
-  t.position = Vector3.add(shakeBasePos, offset)
+  t.position = Vector3.add(Vector3.add(shakeBasePos, travel), offset)
   t.rotation = shakeBaseRot
 }
 
@@ -383,7 +634,7 @@ export function initDeathEffects() {
       reportFailure('death:bloodStain', err instanceof Error ? err.message : String(err))
     }
     try {
-      becomeTombstone(playerPosition, cause)
+      becomeTombstone(playerPosition, getPlayer()?.name ?? 'A player', cause)
     } catch (err) {
       reportFailure('death:tombstone', err instanceof Error ? err.message : String(err))
     }
@@ -395,5 +646,5 @@ export function initDeathEffects() {
   }, 'deathEffects')
 
   addSafeSystem(shakeSystem, 'shakeSystem')
-  addSafeSystem(tombstoneHoverSystem, 'tombstoneHoverSystem')
+  addSafeSystem(tombstoneSystem, 'tombstoneSystem')
 }

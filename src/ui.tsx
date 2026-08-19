@@ -27,8 +27,7 @@
 
 import ReactEcs, { ReactEcsRenderer, UiEntity, ScreenInsetArea } from '@dcl/sdk/react-ecs'
 import { Color4 } from '@dcl/sdk/math'
-import { isPlayerDead, lastDeathCause, respawnCountdown, gameStarted, startGame } from './gameState'
-import { knifeCollected } from './quest'
+import { isPlayerDead, lastDeathCause, respawnCountdown, respawnNow, gameStarted, startGame } from './gameState'
 import {
   roundPhase,
   defeatReason,
@@ -46,24 +45,39 @@ import {
   canLightNearby,
   formatTime,
   portalReady,
-  portalCountdown,
-  escapeRanking
+  portalOpenSeconds,
+  previewActive,
+  previewKind,
+  escapeRanking,
+  playAgainNow,
+  furthestAreaLabel
 } from './gameLoop'
-import { BLOOD_OVERLAY_TEXTURE, RESPAWN_DELAY_SECONDS, KNIFE_ITEMS, ROUND_SECONDS, ROUND_HEARTS, WEAPONS_ENABLED, DEBUG_HUD, DARKNESS_VEIL_ENABLED } from './config'
+import {
+  BLOOD_OVERLAY_TEXTURE,
+  KILLER_HOUSE_TITLE_TEXTURE,
+  KILLER_HOUSE_TITLE_ASPECT,
+  RESPAWN_DELAY_SECONDS,
+  PORTAL_ENTRY_DELAY_SECONDS,
+  ROUND_SECONDS,
+  ROUND_HEARTS,
+  DEBUG_HUD,
+  DARKNESS_VEIL_ENABLED,
+  LIGHTNING_FLASH_COLOR
+} from './config'
 import { darknessAlpha } from './candles'
-import { blackoutAlpha } from './lightning'
-import { trySlash, tryThrow } from './combat'
+import { blackoutAlpha, flashAlpha } from './lightning'
 import { isInvulnerable } from './gameState'
 import { isSimulationHost, readRemoteStats, otherPlayerPositions } from './multiplayer'
 import { playerPosition } from './playerTracker'
 import { playerInYard, nearestSkeletonDist } from './enemies/skeletons'
 import { overFence } from './traps/fenceTips'
 import { activeToasts } from './notifications'
-import { failedLabels } from './safeSystem'
+import { failedLabels, addSafeSystem } from './safeSystem'
 import {
   px,
   fs,
   a,
+  uiCanvasWidth,
   VOID,
   COLD,
   ASH,
@@ -86,7 +100,27 @@ import {
   uiIsMobile
 } from './uiTheme'
 
+/**
+ * The HUD's OWN animation clock, in seconds since the scene started.
+ *
+ * Everything animated in here used to phase off roundRemaining, on the
+ * reasoning that the game loop already ticks it every frame so no extra system
+ * was needed. That reasoning has a hole: roundRemaining only advances while
+ * roundPhase is 'playing' and the round is actually running, and it is an
+ * imported `export let` binding, which puts the HUD's motion at the mercy of
+ * another module's state and of the bundler preserving a live binding. The
+ * candle flame came out completely static because of it.
+ *
+ * This ticks unconditionally, owns nothing else, and cannot be stopped by any
+ * game state — which is what an animation clock has to be. Guarded by
+ * addSafeSystem like every other system here.
+ */
+let uiClock = 0
+
 export function setupUi() {
+  addSafeSystem((dt: number) => {
+    uiClock += dt
+  }, 'uiClockSystem')
   ReactEcsRenderer.setUiRenderer(safeUi)
 }
 
@@ -182,7 +216,24 @@ function gutterAlpha(base: number): number {
 
 /** Slow breath for the portal-open strip, phased off the portal's own countdown. */
 function portalBreath(): number {
-  return 0.62 + 0.38 * Math.abs(Math.sin(portalCountdown * 2.2))
+  return 0.62 + 0.38 * Math.abs(Math.sin(portalOpenSeconds * 2.2))
+}
+
+/**
+ * Candle-flame flicker for the HUD icon, 0.6 → 1.0.
+ *
+ * TWO sine waves at unrelated speeds, deliberately: one alone reads as a
+ * mechanical pulse, and a flame that pulses on a beat looks more artificial
+ * than one that doesn't move at all. Summed like this the peaks never line up
+ * on any short cycle, so it wanders the way a real flame does.
+ *
+ * Clocked off uiClock, NOT roundRemaining — see the note on uiClock for why
+ * that distinction is the whole reason this animates at all.
+ */
+function flameFlicker(): number {
+  const t = uiClock
+  const w = 0.6 * Math.sin(t * 5.3) + 0.4 * Math.sin(t * 8.7) // -1 .. 1
+  return 0.6 + 0.4 * ((w + 1) / 2)
 }
 
 function candlesRemaining(): number {
@@ -196,7 +247,14 @@ function candlesRemaining(): number {
 // that, so it would have been a lie most of the time.
 
 function exitLine(): string {
-  if (portalReady) return `EXIT OPEN · ${Math.max(0, Math.ceil(portalCountdown))}s`
+  // The portal no longer wins the round on a timer, so there is no countdown
+  // left to show — the only number worth a player's attention here is how long
+  // until they are allowed THROUGH it. After that it is an instruction, not a
+  // readout, because nothing is running out.
+  if (portalReady) {
+    const arming = PORTAL_ENTRY_DELAY_SECONDS - portalOpenSeconds
+    return arming > 0 ? `EXIT OPENING · ${Math.ceil(arming)}s` : 'EXIT OPEN · GET TO THE BACKYARD'
+  }
   const n = candlesRemaining()
   return n === 1 ? 'SEALED · 1 candle left' : `SEALED · ${n} candles left`
 }
@@ -212,9 +270,19 @@ function defeatHeadline(): string {
 }
 
 function defeatSubline(): string {
-  const lit = `You lit ${candlesLit} of ${getCandlesRequired()} candles`
+  const lit = `You lit ${candlesLit} of ${getCandlesRequired()} candles, made it to ${furthestAreaLabel()}`
   if (defeatReason === 'time') return `${lit}.`
-  return `${lit} with ${formatTime(roundRemaining)} still on the clock.`
+  // Name the death that actually ended the run. On the third death the death
+  // screen never gets shown — the defeat screen takes over immediately — so
+  // without this the one death that cost you the round is the only one the
+  // game never tells you about.
+  //
+  // Some causes are already phrased as "Killed by ..." because that is how they
+  // read as the death screen's own headline; strip that off here so the line
+  // doesn't come out "Killed by: killed by fallen plank."
+  const cause = lastDeathCause.toLowerCase().replace(/^killed by /, '')
+  const killedBy = cause !== '' ? ` Killed by: ${cause}.` : ''
+  return `${lit}, with ${formatTime(roundRemaining)} still on the clock.${killedBy}`
 }
 
 // 0 right after death (blood splat fully visible) -> 1 (solid black) about
@@ -261,6 +329,393 @@ function stripCells() {
     )
   }
   return cells
+}
+
+/**
+ * CANDLE COUNTER — a candle glyph and "3 / 7", top-right.
+ *
+ * The strip along the top already encodes the same number as cells, but it
+ * encodes it as a SHAPE — you have to count segments to read it, which Week 2
+ * testers did not do mid-run. This states it in digits, with nothing to
+ * decode.
+ *
+ * DRAWN, NOT AN IMAGE. It was assets/ui/candle.png briefly; that art is a thin
+ * yellow-flamed taper and the scene's actual candle is a squat cream pillar on
+ * a flared foot, so the HUD was advertising a prop that doesn't exist in the
+ * house. Boxes let the silhouette match the real model — wide body, wider
+ * base, tall flame — and let the flame be built in PARTS, which is what the
+ * animation needs. (A single alpha-pulsed rectangle over a flat image is what
+ * the first version did, and it read as an orange block, because it was one.)
+ *
+ * THE FLAME IS ALIVE: an outer body and a brighter inner core, both changing
+ * height on flameFlicker(), narrowing as they rise so the silhouette tapers
+ * the way the model's flame does. Once every candle is lit the flame is
+ * dropped entirely and the wax goes full WAX — the icon going out is the
+ * "ritual finished" signal, matching the strip turning violet above it.
+ */
+function candleCounter() {
+  const total = getCandlesRequired()
+  const done = candlesLit >= total
+  const flick = flameFlicker()
+
+  // Proportions taken off the real model: a tall plain pillar with a small
+  // flare at the foot, and a flame about a third of the body's height.
+  //
+  // Sized up substantially from the first pass. At ~9px tall the flame's
+  // animation was mathematically running but invisible — a 3px swing reads as
+  // a static dot, which is why it looked frozen. The motion needs room, so
+  // the whole glyph got bigger and the flame now moves in WIDTH as well as
+  // height, which is what makes it look like it's guttering rather than just
+  // growing.
+  const bodyW = px(16, 12)
+  const baseW = px(21, 15)
+  const flameH = px(20, 14) * (0.62 + 0.5 * flick)
+  const flameW = px(9, 7) * (0.72 + 0.36 * flick)
+  const coreH = px(11, 8) * (0.55 + 0.5 * flick)
+  const coreW = px(4, 3) * (0.7 + 0.4 * flick)
+
+  return (
+    <UiEntity
+      uiTransform={{
+        positionType: 'absolute',
+        // Top-right, dropped clear of the strip and the explorer's own
+        // top-right button cluster (the menu/map/settings icons sit right
+        // under the notch on both desktop and mobile).
+        position: { top: STRIP_HEIGHT() + px(96), right: px(16) },
+        flexDirection: 'row',
+        alignItems: 'center',
+        pointerFilter: 'none' // never eat a tap meant for the world underneath
+      }}
+    >
+      <UiEntity
+        uiTransform={{
+          width: baseW,
+          height: px(T_BODY * 2.9),
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          margin: { right: px(8, 6) }
+        }}
+      >
+        {!done && (
+          <UiEntity
+            uiTransform={{
+              width: flameW,
+              height: flameH,
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'flex-end',
+              margin: { bottom: px(2, 1) }
+            }}
+            uiBackground={{ color: a(FLAME, 0.62 + 0.38 * flick) }}
+          >
+            {/* Hot core, brighter and narrower — the bit that reads as fire
+                rather than as a coloured rectangle. */}
+            <UiEntity uiTransform={{ width: coreW, height: coreH }} uiBackground={{ color: a(WAX, 0.7 + 0.3 * flick) }} />
+          </UiEntity>
+        )}
+
+        {/* Wax pillar, then the small flare at the foot. No background box
+            behind any of this — the glyph sits straight on the world. */}
+        <UiEntity uiTransform={{ width: bodyW, height: px(30, 21) }} uiBackground={{ color: done ? WAX : a(WAX, 0.94) }} />
+        <UiEntity uiTransform={{ width: baseW, height: px(4, 3) }} uiBackground={{ color: done ? WAX : a(WAX, 0.94) }} />
+      </UiEntity>
+
+      <UiEntity
+        uiTransform={{ height: px(T_BODY * 2.9) }}
+        uiText={{
+          value: `${candlesLit} / ${total}`,
+          fontSize: fs(T_BODY),
+          font: FONT_DATA,
+          textAlign: 'middle-left',
+          color: done ? WAX : BONE
+        }}
+      />
+    </UiEntity>
+  )
+}
+
+/**
+ * THE TITLE — "KILLER HOUSE" in dripping blood, at the top of the welcome
+ * screen (on request). Replaces the old "SPOOKY HOUSE" eyebrow, which was
+ * 13px of grey monospace and named a game nobody is calling it.
+ *
+ * A BAKED IMAGE, not text. react-ecs offers three fonts — serif, sans-serif,
+ * monospace — with no custom-font path and no runtime shaders, so a horror
+ * title has to arrive as a PNG. title-source/title_build.py renders it, and
+ * config.ts's KILLER_HOUSE_TITLE_* pair is the contract with that script.
+ *
+ * SIZED FROM THE CANVAS, not from px() alone. react-ecs has no aspect-ratio
+ * property, so both dimensions have to be real numbers; a px()-only width would
+ * compute past the screen edge on a narrow phone under the mobile boost and
+ * overflow the intro column. px(560) is the ceiling on a big screen, 84% of the
+ * canvas is the ceiling on a small one, whichever is smaller wins.
+ *
+ * THE DROPS FALL. Three of them, below the baked drips, on unrelated phases so
+ * they never fall in step. They accelerate (y goes as u², which is what makes
+ * it read as falling rather than sliding) and fade out before they reach the
+ * headline underneath, so nothing ever obscures the copy. Clocked off uiClock
+ * like every other animation here — see the note on that binding.
+ */
+const TITLE_WIDTH_PX = 840 // 50% up from 560, on request
+const TITLE_DROP_COUNT = 14
+// The ceiling on a screen too narrow for the above. Not 1.0, and not even 0.94:
+// uiCanvasWidth() is the WHOLE canvas, while the title is drawn inside
+// ScreenInsetArea, which on a notched phone in landscape gives up ~40px to each
+// cutout. The slack covers those insets so a wide title can't run under one.
+const TITLE_CANVAS_FRACTION = 0.9
+// Mid stop of the baked ramp (#8E100B), so a falling drop is the same blood as
+// the drip it left. Local to the title: the palette's RUST means "loss" and is
+// spent on death/defeat headlines, and this is art, not a state colour.
+const TITLE_BLOOD = Color4.create(0.557, 0.063, 0.043, 1)
+
+/**
+ * Stable pseudo-random in 0..1 for drop `i`, channel `salt`.
+ *
+ * The classic sin-fract hash, and the reason it is here rather than
+ * Math.random(): this runs inside the render function on EVERY frame, so a real
+ * random would re-roll each drop's lane, size and phase sixty times a second
+ * and the whole band would read as static. Being a pure function of (i, salt)
+ * makes the layout fixed while only uiClock moves it. It also means
+ * TITLE_DROP_COUNT is a single knob — no hand-written coordinate table to keep
+ * in step with it.
+ */
+function dropHash(i: number, salt: number): number {
+  const v = Math.sin(i * 12.9898 + salt * 78.233) * 43758.5453
+  return v - Math.floor(v)
+}
+
+function killerHouseTitle() {
+  const w = Math.min(px(TITLE_WIDTH_PX), Math.round(uiCanvasWidth() * TITLE_CANVAS_FRACTION))
+  const h = Math.max(2, Math.round(w / KILLER_HOUSE_TITLE_ASPECT))
+
+  // SPACING ONLY, and deliberately almost none (on request — close the gap to
+  // the copy). This was 62% of the title's height at one point purely because
+  // the drops needed runway; they no longer need anything like that much, and
+  // the room was only pushing the headline down the screen.
+  const gap = px(T_BODY * 0.5)
+
+  // THE BLOOD BELONGS TO THE TITLE, not to the screen (reverted on request).
+  //
+  // There was a version where these were a full-screen layer at zIndex 2,
+  // raining across the headline, the body copy and the button. It worked, but
+  // it read as weather happening to the page rather than as the title bleeding
+  // — and it put moving marks over text the player is trying to read on the one
+  // screen that explains the game. Back inside the title's own box, every drop
+  // starts on the artwork and dies just below it, so it reads as coming off the
+  // letters, which is the whole idea.
+  //
+  // The fall is derived from the title's height rather than from `gap`, so
+  // closing the gap did not also kill the animation: drops start up inside the
+  // artwork near the baked drip tips and finish flush with the bottom of the
+  // box. Nothing ever leaves the parent, so there is no question of whether an
+  // overflowing child gets clipped.
+  const drops = []
+  for (let i = 0; i < TITLE_DROP_COUNT; i++) {
+    const period = 1.5 + 1.6 * dropHash(i, 3)
+    const u = ((uiClock + dropHash(i, 2) * period) % period) / period
+    // Fade in fast, hold, fade out over the last stretch — a drop that vanishes
+    // at full opacity reads as a dropped frame.
+    const fade = u < 0.14 ? u / 0.14 : u < 0.58 ? 1 : Math.max(0, 1 - (u - 0.58) / 0.42)
+    const alpha = fade * (0.55 + 0.45 * dropHash(i, 5))
+    if (alpha <= 0.03) continue
+
+    const scale = 0.55 + 0.95 * dropHash(i, 4)
+    const dw = Math.max(2, Math.round(w * 0.0045 * scale))
+    const dh = Math.max(2, Math.round(w * 0.0085 * scale))
+    const from = h - Math.round(h * 0.12) // up among the drips, not in clear air
+    const to = h + gap - dh               // flush with the bottom of the box
+    // u² so it accelerates; constant speed reads as sliding, not falling.
+    const top = from + Math.round((to - from) * u * u)
+
+    drops.push(
+      <UiEntity
+        key={i}
+        uiTransform={{
+          positionType: 'absolute',
+          position: { top, left: Math.round(w * (0.05 + 0.9 * dropHash(i, 1))) },
+          width: dw,
+          height: dh
+        }}
+        uiBackground={{ color: a(TITLE_BLOOD, alpha) }}
+      />
+    )
+  }
+
+  return (
+    <UiEntity key="title" uiTransform={{ width: w, height: h + gap }}>
+      <UiEntity
+        uiTransform={{ positionType: 'absolute', position: { top: 0, left: 0 }, width: w, height: h }}
+        uiBackground={{ textureMode: 'stretch', texture: { src: KILLER_HOUSE_TITLE_TEXTURE } }}
+      />
+      {drops}
+    </UiEntity>
+  )
+}
+
+/**
+ * DEATH BLOOD — the splatter thrown across the screen when you die.
+ *
+ * Every death used to draw the SAME texture at the SAME orientation, so the
+ * fifth death looked identical to the first — which quietly undercuts the one
+ * moment the game is trying to make feel violent and surprising.
+ *
+ * There is still only one blood image in the project, and no new art was
+ * added: the variety comes from uiBackground's `uvs`, which lets a stretched
+ * texture be sampled flipped and cropped. Eight variants below combine
+ * horizontal flip, vertical flip and a zoomed-in crop, and TWO of them are
+ * layered per death at different alphas — so the composite is different again,
+ * and the count of distinct-looking deaths is far past eight.
+ *
+ * Keyed off roundDeaths, not a random number: it must stay identical for every
+ * frame of one death screen (a splat resampling itself each frame would read
+ * as a rendering fault) while changing on the next. Real blood textures can
+ * still be dropped in later — point BLOOD_SPLAT_UVS' consumers at a list of
+ * srcs instead and this whole approach retires cleanly.
+ */
+const BLOOD_SPLAT_UVS: number[][] = [
+  [0, 0, 0, 1, 1, 1, 1, 0], // as authored
+  [1, 0, 1, 1, 0, 1, 0, 0], // mirrored left-right
+  [0, 1, 0, 0, 1, 0, 1, 1], // mirrored top-bottom
+  [1, 1, 1, 0, 0, 0, 0, 1], // rotated 180 (both flips)
+  [0.12, 0.12, 0.12, 0.88, 0.88, 0.88, 0.88, 0.12], // punched in — reads as a closer, heavier hit
+  [0.88, 0.12, 0.88, 0.88, 0.12, 0.88, 0.12, 0.12],
+  [0.12, 0.88, 0.12, 0.12, 0.88, 0.12, 0.88, 0.88],
+  [0.88, 0.88, 0.88, 0.12, 0.12, 0.12, 0.12, 0.88]
+]
+
+function bloodSplats() {
+  const n = BLOOD_SPLAT_UVS.length
+  // Two co-prime strides so the pair of layers doesn't fall into a short
+  // repeating cycle as the death count climbs.
+  const near = BLOOD_SPLAT_UVS[roundDeaths % n]
+  const far = BLOOD_SPLAT_UVS[(roundDeaths * 3 + 5) % n]
+
+  return (
+    <UiEntity uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', position: { top: 0, left: 0 } }}>
+      <UiEntity
+        uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', position: { top: 0, left: 0 } }}
+        uiBackground={{ textureMode: 'stretch', texture: { src: BLOOD_OVERLAY_TEXTURE }, uvs: far, color: a(Color4.White(), 0.55) }}
+      />
+      <UiEntity
+        uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', position: { top: 0, left: 0 } }}
+        uiBackground={{ textureMode: 'stretch', texture: { src: BLOOD_OVERLAY_TEXTURE }, uvs: near }}
+      />
+    </UiEntity>
+  )
+}
+
+/**
+ * PREVIEW ARROWS — four blinking arrows converging on the thing the camera is
+ * orbiting, drawn only while the location preview is running.
+ *
+ * The preview takes the camera off the player and swings it around their last
+ * candle (or the portal). It's a striking shot, but on its own it's ambiguous:
+ * the player is being shown a room, and nothing in the frame says WHICH object
+ * in it they're supposed to care about. These point at it.
+ *
+ * They can be a fixed screen-space cross because of how the preview camera is
+ * built — updatePreviewCamera aims it with lookRotation straight at
+ * previewCenter every frame, so the target is pinned to the exact middle of
+ * the screen for the whole orbit no matter where the camera has swung to.
+ * Arrows converging on the centre are therefore always pointing at it, with no
+ * world-to-screen projection needed (react-ecs has none to offer anyway).
+ *
+ * They BLINK and BREATHE together: alpha and inset both ride the same wave, so
+ * the four arrows pulse inward in unison rather than sitting there. Motion is
+ * what makes them read as "look at this" instead of as frame decoration.
+ */
+function previewArrows() {
+  // ~2.5 blinks a second. |sin| doubles the perceived rate, so this is a
+  // deliberately brisk pulse — it's on screen for only a few seconds and has
+  // to be noticed inside the first one.
+  const pulse = Math.abs(Math.sin(uiClock * 8.0))
+  const alpha = 0.35 + 0.65 * pulse
+  const inset = px(150) - px(26) * pulse // arrows creep inward on each beat
+  const size = px(30)
+  // Label and colour both follow what the preview is ACTUALLY showing — see
+  // PreviewKind in gameLoop.ts. The stuck hint can fire with several candles
+  // still standing, so it must not claim this is the last one.
+  const isPortal = previewKind === 'portal'
+  const label =
+    previewKind === 'portal' ? 'THE WAY OUT' : previewKind === 'lastCandle' ? 'YOUR LAST CANDLE' : 'LIGHT THE CANDLE TO PROGRESS'
+  const colour = isPortal ? VEIL : FLAME
+
+  const arrow = (glyph: string, style: Record<string, unknown>) => (
+    <UiEntity
+      key={glyph}
+      uiTransform={{ positionType: 'absolute', width: size, height: size, ...style }}
+      uiText={{ value: glyph, fontSize: fs(T_HEAD * 0.6), font: FONT_DATA, textAlign: 'middle-center', color: a(colour, alpha) }}
+    />
+  )
+
+  return (
+    <UiEntity
+      uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', pointerFilter: 'none' }}
+    >
+      {/* Each arrow sits one inset out from centre and points back at it. */}
+      {arrow('▼', { position: { top: `50%`, left: `50%` }, margin: { top: -inset - size, left: -size / 2 } })}
+      {arrow('▲', { position: { top: `50%`, left: `50%` }, margin: { top: inset, left: -size / 2 } })}
+      {arrow('▶', { position: { top: `50%`, left: `50%` }, margin: { top: -size / 2, left: -inset - size } })}
+      {arrow('◀', { position: { top: `50%`, left: `50%` }, margin: { top: -size / 2, left: inset } })}
+
+      {/* Offset as a PERCENTAGE of the viewport, not px(190). A scaled pixel
+          offset is a fixed distance from the centre no matter how tall the
+          screen is, and on a landscape phone (≈390 tall, mobile boost 1.6) that
+          put this line ~300px below a centre that is only 195px from the
+          bottom — i.e. the label was off screen entirely on exactly the device
+          this preview matters most on. 22% lands it at 72% down on every
+          aspect ratio. */}
+      <UiEntity
+        uiTransform={{
+          positionType: 'absolute',
+          position: { top: '50%', left: 0 },
+          width: '100%',
+          margin: { top: '22%' }
+        }}
+        uiText={{
+          value: label,
+          fontSize: fs(T_SMALL),
+          font: FONT_DATA,
+          textAlign: 'middle-center',
+          color: a(colour, alpha)
+        }}
+      />
+
+      {/* THE WAY OUT OF THE CUT. The preview takes the player's controls away
+          for several seconds; anyone who has already seen what they're being
+          shown should be able to leave immediately (gameLoop's
+          previewSkipPressed ends it on the spot).
+
+          It does NOT say Esc, which is what was asked for: Esc is the
+          explorer's own menu key and is never delivered to a scene, so there is
+          no InputAction to bind and a line promising it would be a lie. Click
+          and tap are the same action (IA_POINTER) on the two platforms, so the
+          wording is the only thing that changes.
+
+          Anchored to the BOTTOM edge, which is where a skip prompt belongs and
+          is the one anchor that cannot fall off a short screen. Lifted clear of
+          the mobile client's own touch cluster, same as the clock/hearts.
+
+          Steady, not blinking like the arrows above it — the arrows are an
+          alert and want the eye, this is an instruction and wants to be read
+          once. */}
+      <UiEntity
+        uiTransform={{
+          positionType: 'absolute',
+          position: uiIsMobile() ? { bottom: px(120), left: 0 } : { bottom: px(48), left: 0 },
+          width: '100%'
+        }}
+        uiText={{
+          value: uiIsMobile() ? 'Tap to exit camera' : 'Click or press E to exit camera',
+          fontSize: fs(T_MICRO),
+          font: FONT_DATA,
+          textAlign: 'middle-center',
+          color: a(BONE, 0.7)
+        }}
+      />
+    </UiEntity>
+  )
 }
 
 /**
@@ -344,7 +799,15 @@ function toastStack() {
     <UiEntity
       uiTransform={{
         positionType: 'absolute',
-        position: { top: px(12), left: 0 },
+        // Raised back up, on request — px(64) of clearance left an obvious gap.
+        //
+        // STRIP_HEIGHT is the FLOOR here, not decoration. The strip is declared
+        // after the toasts in uiMenu, so it paints over them: the original
+        // px(12) put the toast's top edge underneath the strip, which is what
+        // was clipping it — not the explorer's own bar. Anything measured from
+        // the strip's bottom edge is safe; anything smaller starts losing the
+        // first line again.
+        position: { top: STRIP_HEIGHT() + px(20), left: 0 },
         width: '100%',
         flexDirection: 'column',
         alignItems: 'center',
@@ -356,8 +819,20 @@ function toastStack() {
           key={t.id}
           uiTransform={{
             width: 'auto',
-            maxWidth: px(480),
-            height: px(T_SMALL * 1.8),
+            // Wide enough for the longest toast this scene sends — the sealed
+            // boundary line runs 57 characters, which overflowed px(480) and
+            // wrapped. Clamped to the canvas as well, because px() alone does
+            // not know how wide the screen is: on a 390px phone the mobile
+            // boost turns px(560) into 728px and the plate would hang off both
+            // edges. Same reason killerHouseTitle sizes off uiCanvasWidth.
+            maxWidth: Math.min(px(560), Math.round(uiCanvasWidth() * 0.9)),
+            // TALL ENOUGH FOR TWO LINES. The height is fixed (uiText does not
+            // grow its entity), and at one line's worth a wrapped toast spilled
+            // straight out of its own background: the second line rendered with
+            // no plate behind it and the first was pushed up under the screen
+            // edge. On a narrow phone even 560px wraps, so this has to hold two
+            // lines regardless of how wide the plate gets.
+            height: px(T_SMALL * 2.8),
             margin: { bottom: px(4) },
             padding: { left: px(14), right: px(14) }
           }}
@@ -443,7 +918,7 @@ function leaderboardRows() {
  * (notch, status bar, home indicator, rounded corners). On desktop the
  * insets are zero, so this renders identically to the old single-layer shell.
  */
-function overlayShell(tint: Color4, children: ReactEcs.JSX.ReactNode) {
+function overlayShell(tint: Color4, children: ReactEcs.JSX.ReactNode, banner?: ReactEcs.JSX.ReactNode) {
   return (
     <UiEntity
       uiTransform={{ width: '100%', height: '100%', positionType: 'absolute' }}
@@ -452,6 +927,13 @@ function overlayShell(tint: Color4, children: ReactEcs.JSX.ReactNode) {
       <ScreenInsetArea
         uiTransform={{ flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
       >
+        {/* Above the column and NOT inside it. The 620px cap is a line-length
+            limit for prose — it exists so a paragraph doesn't run the width of
+            a monitor. A title is a piece of art with no line length to control,
+            and once it went 50% bigger it was wider than that cap and would
+            have overflowed a parent it never belonged in. Anything passed here
+            is free to be as wide as the safe area. */}
+        {banner}
         <UiEntity
           uiTransform={{
             width: '88%',
@@ -488,7 +970,8 @@ function aliveText(): string {
 // three that decide whether a threat can kill you: Y (is the reported height
 // sane, ~0-2 in the yard, or camera-height ~1.7 that pushes you "out of" the
 // yard), YARD (are you counted as in the yard), INV (are you invulnerable).
-// SKEL is the flat distance to the nearest skeleton (kill happens under 1.2).
+// SKEL is the flat distance to the nearest skeleton (kill happens under
+// SKELETON_KILL_RADIUS, currently 0.9 — see the derivation in config.ts).
 // Wrapped in its own try/catch — a throw in HERE must not take the entire HUD
 // down with it (safeUi()'s barrier is coarser: it would replace the WHOLE
 // screen with a red error card, hiding the RUN HUD/candles/hearts along with
@@ -538,6 +1021,26 @@ export const uiMenu = () => (
       />
     )}
 
+    {/* THE STRIKE FLASH. Drawn AFTER the darkness veil so it washes over it
+        rather than under it — the bolt is the brightest thing on screen for
+        the half second it lasts, and layering it beneath a 0.85-alpha
+        blackout would make it invisible at exactly the moment it fires.
+        Not gated on DARKNESS_VEIL_ENABLED: that flag exists to control the
+        night gloom, and the flash should still read with the gloom off. */}
+    {flashAlpha > 0.01 && (
+      <UiEntity
+        uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', pointerFilter: 'none' }}
+        uiBackground={{
+          color: Color4.create(
+            LIGHTNING_FLASH_COLOR.r,
+            LIGHTNING_FLASH_COLOR.g,
+            LIGHTNING_FLASH_COLOR.b,
+            Math.min(1, flashAlpha)
+          )
+        }}
+      />
+    )}
+
     {/* "So-and-so has died" / "lit a candle" — visible in any game state, not
         just mid-round, since the event that triggered it already happened. */}
     {gameStarted && <ScreenInsetArea uiTransform={{ pointerFilter: 'none' }}>{toastStack()}</ScreenInsetArea>}
@@ -550,6 +1053,14 @@ export const uiMenu = () => (
     {gameStarted && roundPhase === 'playing' && (
       <ScreenInsetArea uiTransform={{ pointerFilter: 'none' }}>
         {strip(false)}
+
+        {/* Only while the camera is off the player, orbiting their target. */}
+        {previewActive && previewArrows()}
+
+        {/* Candle count, top-RIGHT under the strip — paired with the exit
+            status on the left, so both "where am I up to" readouts share one
+            line across the top. */}
+        {candleCounter()}
 
         {/* Exit status, top-left under the strip — paired with the strip's
             own candle-progress cells since both describe "how close to
@@ -616,8 +1127,12 @@ export const uiMenu = () => (
       <ScreenInsetArea uiTransform={{ pointerFilter: 'none' }}>
         <UiEntity
           uiTransform={{
+            // Moved up from 22% toward center, on request (playtest feedback:
+            // players weren't sure whether to tap or hold, in part because
+            // this prompt sat low enough to be outside where a mid-panic
+            // player is actually looking).
             positionType: 'absolute',
-            position: { bottom: '22%', left: 0 },
+            position: { bottom: '42%', left: 0 },
             width: '100%',
             pointerFilter: 'none'
           }}
@@ -632,79 +1147,55 @@ export const uiMenu = () => (
       </ScreenInsetArea>
     )}
 
-    {/* Knife hotbar, bottom-centre. Parked behind WEAPONS_ENABLED. */}
-    {WEAPONS_ENABLED && gameStarted && roundPhase === 'playing' && !isPlayerDead && (
-      <ScreenInsetArea uiTransform={{ pointerFilter: 'none' }}>
-        <UiEntity
-          uiTransform={{
-            positionType: 'absolute',
-            position: { bottom: px(14), left: 0 },
-            width: '100%',
-            flexDirection: 'row',
-            justifyContent: 'center'
-          }}
-        >
-          {KNIFE_ITEMS.map((item, i) => (
-          <UiEntity
-            key={item.entityName}
-            uiTransform={{
-              width: px(88),
-              height: px(108),
-              margin: { left: px(6), right: px(6) },
-              flexDirection: 'column',
-              alignItems: 'center',
-              padding: { top: px(9) }
-            }}
-            uiBackground={{ color: a(VOID, knifeCollected[i] ? 0.8 : 0.55) }}
-            // Tap-to-act on mobile (no keyboard for keys 1/2): slot 0 slashes,
-            // slot 1 throws. Desktop keeps using the keys too — same functions.
-            onMouseDown={i === 0 ? trySlash : i === 1 ? tryThrow : undefined}
-          >
-            <UiEntity
-              uiTransform={{ width: px(66), height: px(66) }}
-              uiBackground={
-                knifeCollected[i]
-                  ? { textureMode: 'stretch', texture: { src: item.icon } }
-                  : { color: a(WAX, 0.07) }
-              }
-            />
-            <UiEntity
-              uiTransform={{ width: px(66), height: px(28) }}
-              uiText={{
-                value: `${i + 1}`,
-                fontSize: fs(T_SMALL),
-                font: FONT_DATA,
-                textAlign: 'middle-center',
-                color: knifeCollected[i] ? WAX : ASH
-              }}
-            />
-            </UiEntity>
-          ))}
-        </UiEntity>
-      </ScreenInsetArea>
-    )}
+    {/* The knife hotbar was DELETED on 2026-08-19 on request, along with the
+        thrown knife and every pickup. It rendered KNIFE_ITEMS bottom-centre
+        and doubled as the mobile tap target for slashing, since there is no
+        keyboard there. Desktop key 1 still calls trySlash(); mobile now has
+        no way to slash at all, which is moot while WEAPONS_ENABLED is false
+        and is the thing to restore first if weapons come back. */}
 
     {/* ── INTRO GATE ───────────────────────────────────────────────────── */}
-    {!gameStarted &&
-      overlayShell(a(VOID, 0.94), [
-        <UiEntity
-          key="title"
-          uiTransform={{ width: '100%', height: px(T_MICRO * 2) }}
-          uiText={{
-            value: 'SPOOKY HOUSE',
-            fontSize: fs(T_MICRO),
-            font: FONT_DATA,
-            textAlign: 'middle-center',
-            color: ASH
-          }}
-        />,
+    {/* Wrapped so the blood rain can be a sibling of the whole shell and paint
+        OVER the copy — same pattern the win overlay uses for its frozen
+        strip.
+
+        THE WHOLE SCREEN STARTS THE GAME. The intro waits for the player now
+        instead of auto-starting after 12s (on request), and that timer was the
+        only thing standing between a mis-registered tap and an unrecoverable
+        soft-lock — nothing can kill, draw a HUD or advance a round until
+        gameStarted flips. Listening on the full-screen wrapper as well as the
+        button removes the single point of failure the timer was insuring
+        against. startGame() is idempotent, so the button firing both handlers
+        is a no-op. */}
+    {!gameStarted && (
+      <UiEntity
+        uiTransform={{ width: '100%', height: '100%', positionType: 'absolute' }}
+        onMouseDown={() => {
+          startGame()
+        }}
+      >
+        {overlayShell(
+        a(VOID, 0.94),
+        [
         <UiEntity
           key="head"
           uiTransform={{ width: '100%', height: px(T_HEAD * 1.4) }}
           uiText={{
-            // Round-aware: says 5 on round one and 7 after, so the number the
-            // player is told is the number they actually have to light.
-            value: `Light ${getCandlesRequired()} candles. Get out.`,
+            // ONE SENTENCE, ONE CAUSE AND EFFECT (on request). Not "Light N
+            // candles. Get out." — that was two instructions, and it read as
+            // two separate objectives when it is really one thing leading to
+            // the other. "to get out" is doing the work that the full stop
+            // used to break.
+            //
+            // NO NUMBER HERE, deliberately. It was round-aware (5 on round one,
+            // 7 after) and correct, but a count in the headline invites the
+            // player to memorise a target before they have seen a single
+            // candle. The count is already on screen the entire run, twice
+            // over — the strip along the top has exactly one cell per required
+            // candle, and candleCounter() states it in digits as "3 / 7". This
+            // line's job is what the game IS; those two say how far through it
+            // you are.
+            value: 'Light candles to get out.',
             fontSize: fs(T_HEAD),
             font: FONT_DISPLAY,
             textAlign: 'middle-center',
@@ -717,7 +1208,7 @@ export const uiMenu = () => (
           uiText={{
             value:
               'They are hidden across the yard and the house — the front door is straight ahead. ' +
-              'Skeletons hunt you and the wall spikes fire on their own. Three hearts, one touch kills, three minutes.',
+              `Skeletons hunt you and the wall spikes fire on their own. Three hearts, one touch kills, ${Math.round(ROUND_SECONDS / 60)} minutes.`,
             fontSize: fs(T_BODY),
             font: FONT_BODY,
             textAlign: 'middle-center',
@@ -735,6 +1226,16 @@ export const uiMenu = () => (
             color: WAX
           }}
         />,
+        // (The "Every candle you can see is yours — you will see other players,
+        // but never their candles" line lived here. Removed on request.
+        //
+        // It was written for a rule that needed explaining: flames used to be
+        // SHARED, so a candle in front of you might be someone else's and would
+        // quietly ignore your hold. Once candles went fully private (see the
+        // header in gameLoop.ts) the rule stopped having an exception, and a
+        // sentence describing a rule with no exception is just more to read on
+        // a screen that already asks for a lot. Nothing on screen belongs to
+        // anyone else now, so nothing has to say so.)
         <UiEntity
           key="best"
           uiTransform={{ width: '100%', height: px(T_MICRO * 1.8) }}
@@ -776,7 +1277,11 @@ export const uiMenu = () => (
             }}
           />
         </UiEntity>
-      ])}
+        ],
+        killerHouseTitle()
+        )}
+      </UiEntity>
+    )}
 
     {/* ── WIN ──────────────────────────────────────────────────────────── */}
     {roundPhase === 'won' && (
@@ -858,7 +1363,31 @@ export const uiMenu = () => (
               textAlign: 'middle-center',
               color: ASH
             }}
-          />
+          />,
+          <UiEntity
+            key="playAgain"
+            uiTransform={{
+              width: '70%',
+              maxWidth: px(320),
+              height: px(62, 48),
+              margin: { top: px(14) },
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+            uiBackground={{ color: WAX }}
+            onMouseDown={() => playAgainNow()}
+          >
+            <UiEntity
+              uiTransform={{ width: '100%', height: '100%' }}
+              uiText={{
+                value: 'Play Again',
+                fontSize: fs(T_BODY),
+                font: FONT_BODY,
+                textAlign: 'middle-center',
+                color: VOID
+              }}
+            />
+          </UiEntity>
         ])}
         {/* Frozen at the exact gap you escaped on — the thing you read all
             round becomes the trophy. Same safe-area treatment as the live
@@ -902,7 +1431,31 @@ export const uiMenu = () => (
             textAlign: 'middle-center',
             color: ASH
           }}
-        />
+        />,
+        <UiEntity
+          key="playAgain"
+          uiTransform={{
+            width: '70%',
+            maxWidth: px(320),
+            height: px(62, 48),
+            margin: { top: px(14) },
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+          uiBackground={{ color: WAX }}
+          onMouseDown={() => playAgainNow()}
+        >
+          <UiEntity
+            uiTransform={{ width: '100%', height: '100%' }}
+            uiText={{
+              value: 'Play Again',
+              fontSize: fs(T_BODY),
+              font: FONT_BODY,
+              textAlign: 'middle-center',
+              color: VOID
+            }}
+          />
+        </UiEntity>
       ])}
 
     {/* ── DEATH ────────────────────────────────────────────────────────── */}
@@ -917,10 +1470,7 @@ export const uiMenu = () => (
         {/* Blood splatter around the screen edges, behind the text. With no
             red anywhere on the HUD, this is one of the only reds in the game
             and it lands harder for it. */}
-        <UiEntity
-          uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', position: { top: 0, left: 0 } }}
-          uiBackground={{ textureMode: 'stretch', texture: { src: BLOOD_OVERLAY_TEXTURE } }}
-        />
+        {bloodSplats()}
         {/* Fade to black: swallows the blood splat as the countdown runs. */}
         <UiEntity
           uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', position: { top: 0, left: 0 } }}
@@ -944,6 +1494,16 @@ export const uiMenu = () => (
             }}
           />
           <UiEntity
+            uiTransform={{ width: '100%', height: px(T_MICRO * 1.8), margin: { top: px(4) } }}
+            uiText={{
+              value: `${formatTime(elapsedSeconds())} into the run`,
+              fontSize: fs(T_MICRO),
+              font: FONT_DATA,
+              textAlign: 'middle-center',
+              color: ASH
+            }}
+          />
+          <UiEntity
             uiTransform={{ flexDirection: 'row', alignItems: 'center', margin: { top: px(12) } }}
           >
             {heartPips(T_HEAD * 0.6)}
@@ -958,6 +1518,33 @@ export const uiMenu = () => (
               color: ASH
             }}
           />
+          {/* Skip the wait. Same shape as the win/defeat "Play Again" button so
+              the two read as the same affordance, and it sits AFTER the
+              fade-to-black in the tree so it stays visible once the screen has
+              gone solid black two-thirds of the way through the countdown. */}
+          <UiEntity
+            uiTransform={{
+              width: '70%',
+              maxWidth: px(320),
+              height: px(62, 48),
+              margin: { top: px(14) },
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+            uiBackground={{ color: WAX }}
+            onMouseDown={() => respawnNow()}
+          >
+            <UiEntity
+              uiTransform={{ width: '100%', height: '100%' }}
+              uiText={{
+                value: 'Respawn Now',
+                fontSize: fs(T_BODY),
+                font: FONT_BODY,
+                textAlign: 'middle-center',
+                color: VOID
+              }}
+            />
+          </UiEntity>
         </UiEntity>
         </ScreenInsetArea>
       </UiEntity>

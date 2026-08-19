@@ -102,6 +102,29 @@ export function uiScale(): number {
   }
 }
 
+/**
+ * Canvas width in virtual px — for the one case px() cannot serve.
+ *
+ * react-ecs has no aspect-ratio property, so an image that must keep its shape
+ * needs BOTH dimensions in real numbers, which means knowing how much room
+ * there actually is. px() can't answer that: it scales a fixed design size, so
+ * on a narrow phone at mobile boost a px()-sized title happily computes wider
+ * than the screen and overflows. Anything sized off this should still clamp
+ * with px() for the upper bound — this is the ceiling, not the size.
+ *
+ * Falls back to a desktop-ish width for the frames before UiCanvasInformation
+ * arrives, same one-frame-pop trade-off as uiScale().
+ */
+export function uiCanvasWidth(): number {
+  try {
+    const info = UiCanvasInformation.getOrNull(engine.RootEntity)
+    if (info === null || !(info.width > 0)) return 1280
+    return info.width
+  } catch {
+    return 1280
+  }
+}
+
 /** Scale a layout dimension. `floor` keeps hairline elements from vanishing on phones. */
 export function px(n: number, floor = 0): number {
   return Math.max(floor, Math.round(n * uiScale()))

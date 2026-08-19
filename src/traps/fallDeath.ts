@@ -43,12 +43,36 @@ let dropDistance = 0 // height lost in the current continuous descent
 let peakFallSpeed = 0 // fastest downward speed reached during that descent
 let descentTime = 0 // seconds spent in the current descent
 let graceTimer = 0 // seconds of consecutive non-descent so far
+let descentStartY = 0 // world Y the current descent began at — names the death
 
 function resetFall() {
   dropDistance = 0
   peakFallSpeed = 0
   descentTime = 0
   graceTimer = 0
+  descentStartY = 0
+}
+
+/**
+ * Names the fall from where it STARTED, not from a guess.
+ *
+ * This used to hardcode "Fell from the second floor" for every qualifying
+ * fall, which is exactly the "incorrect fall-death messages" the Week 2
+ * playtest reported — and a death screen whose headline is the cause of
+ * death (see ui.tsx) can't afford to state a cause that didn't happen.
+ *
+ * The 6m band matches areaIndexForY() in gameLoop.ts. In practice nearly
+ * every lethal fall in this house does start above it: upstairs sits at
+ * y≈8.4, and the only other high ground is the chandelier on its y
+ * 3.18-13.18 ride — and since FALL_KILL_DISTANCE is 4.5m, a fall that
+ * qualifies at all has to have begun at roughly that height or higher. The
+ * ground floor (y≈2.58) is only 2.58m above the yard, so it can never
+ * produce one. The generic branch is therefore a rare edge case, and it says
+ * only what we actually know.
+ */
+function fallCause(startY: number): string {
+  if (startY >= 6) return 'Fell from the second floor'
+  return 'Fell to your death'
 }
 
 function fallDeathSystem(dt: number) {
@@ -79,7 +103,12 @@ function fallDeathSystem(dt: number) {
   }
 
   if (dy < -0.001) {
-    // still descending: keep building the streak
+    // still descending: keep building the streak. On the FIRST descending
+    // frame, remember where the drop began — prevY was already advanced to y
+    // above, so the height we started from this frame is (y - dy). A streak
+    // resumed after a grace pause keeps its original start, which is what
+    // fallCause() wants.
+    if (dropDistance === 0) descentStartY = y - dy
     dropDistance += -dy
     descentTime += dt
     graceTimer = 0
@@ -100,7 +129,7 @@ function fallDeathSystem(dt: number) {
   // if (dropDistance > 0.5) console.log(`fall: dropped ${dropDistance.toFixed(2)}m, peak ${peakFallSpeed.toFixed(1)} m/s, avg ${(descentTime > 0 ? dropDistance / descentTime : 0).toFixed(1)} m/s`)
   const avgSpeed = descentTime > 0 ? dropDistance / descentTime : 0
   if (dropDistance >= FALL_KILL_DISTANCE && (peakFallSpeed >= FALL_KILL_MIN_SPEED || avgSpeed >= FALL_KILL_AVG_SPEED)) {
-    killPlayer('Fell from the second floor')
+    killPlayer(fallCause(descentStartY))
   }
   resetFall()
 }
