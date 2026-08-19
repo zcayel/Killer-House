@@ -49,6 +49,7 @@ import {
   BillboardMode,
   Entity
 } from '@dcl/sdk/ecs'
+import { volumeCylinder, endVolumes, VOLUME_COLOURS } from './debug/killVolumes'
 import { Vector3, Color3 } from '@dcl/sdk/math'
 import { gameStarted, isPlayerDead, killPlayer, isInvulnerable } from './gameState'
 import { playerPosition } from './playerTracker'
@@ -79,7 +80,27 @@ import {
   LIGHTNING_IMPACT_RANGE
 } from './config'
 
+/**
+ * THREE THUNDER CLAPS, cycled in order — on request 2026-08-20.
+ *
+ * One sample repeating is what makes a storm read as a loop rather than
+ * weather, and at a 9s strike interval you hear it a lot. Rotating three
+ * distinct recordings breaks that up; the existing random volume and pitch
+ * then vary each one further, so no two strikes land the same.
+ *
+ * [1] is the original. [2] and [3] were cut from the BBC storm recording
+ * already in the project (assets/scene/Audio/bbc_thunder---_07005238.mp3, a
+ * 35s field recording) at its two loudest separated claps — 3.6s and 13.7s —
+ * then faded, loudness-matched and converted to the same mono 24kHz PCM as [1]
+ * so all three sit at the same level.
+ */
 export const SOUND_THUNDER = 'assets/sounds/thunder.wav' // CC0, freesound #243614 (trimmed)
+export const SOUND_THUNDER_2 = 'assets/sounds/thunder_2.wav'
+export const SOUND_THUNDER_3 = 'assets/sounds/thunder_3.wav'
+const THUNDER_CLAPS = [SOUND_THUNDER, SOUND_THUNDER_2, SOUND_THUNDER_3]
+/** Rotates rather than randomises: random repeats, and a repeat is the thing
+ *  this is meant to stop. */
+let thunderIndex = 0
 
 /** Screen blackout at the moment the thunder hits (read by the UI overlay). */
 export let blackoutAlpha = 0
@@ -184,6 +205,16 @@ function pickStrikePoint(taken: Vector3[]): Vector3 {
 }
 
 /** Is the player standing in ANY of this strike's lethal rings — and outside the house, which is always shelter? */
+/** Debug overlay: one cylinder per live strike point. */
+function drawStrikeVolumes(): void {
+  let n = 0
+  for (const s of strikePoints) {
+    volumeCylinder('lightning', n++, Vector3.create(s.x, 0, s.z), LIGHTNING_KILL_RADIUS,
+                   0, 6, VOLUME_COLOURS.lightning)
+  }
+  endVolumes('lightning', n)
+}
+
 function playerInStrike(): boolean {
   const p = playerPosition
   const shelteredByHouse =
@@ -302,7 +333,8 @@ function lightningSystem(dt: number) {
     const closeness = Math.random() // 0 = far-off roll, 1 = right overhead
     const volume = 0.22 + closeness * 0.26 // ~35% average, 22%-48% span
     const pitch = 0.75 + Math.random() * 0.4 // deep grumble ... sharp crack
-    playSoundAt(SOUND_THUNDER, playerPosition, volume, pitch)
+    playSoundAt(THUNDER_CLAPS[thunderIndex], playerPosition, volume, pitch)
+    thunderIndex = (thunderIndex + 1) % THUNDER_CLAPS.length
     blackoutAlpha = BLACKOUT_PEAK * (0.6 + closeness * 0.4)
     // Near strikes wash out harder than distant ones, same as the blackout.
     flashAlpha = LIGHTNING_FLASH_PEAK * (0.55 + closeness * 0.45)
@@ -315,6 +347,7 @@ function lightningSystem(dt: number) {
       // isInvulnerable() covers the respawn grace and the camera-lock preview
       // — the player must never be killed by the sky during a window where
       // they cannot move themselves out of it.
+      drawStrikeVolumes()
       if (!isInvulnerable() && playerInStrike()) killPlayer('Struck by lightning')
     }
   }

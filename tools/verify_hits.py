@@ -7,9 +7,16 @@ across a grid, on both floors, through the clip, and every time the game says
   UNFAIR  - killed with the model further away than your own body radius.
   MISSED  - the mesh passed through you and nothing happened.
 
-It reads the keyframes out of src/traps/swingTrapShapes.ts and the placements
-out of assets/scene/main.composite, so it tests what actually ships rather than
-a copy of it. Re-run after any re-bake, or after moving anything in Creator Hub.
+It reads the keyframes out of src/traps/swingTrapShapes.ts, the plank
+placements out of main.crdt and the axe placements out of SWING_TRAP_PLACEMENTS
+in src/config.ts — the three files the GAME reads — so it tests what actually
+ships rather than a copy of it. Re-run after any re-bake, after moving anything
+in Creator Hub, or after editing SWING_TRAP_PLACEMENTS.
+
+It deliberately does NOT read assets/scene/main.composite. That is the editor's
+file; on 2026-08-19 it disagreed with main.crdt about where an axe was by
+eleven metres, and reading it is why this tool reported a fair axe for a day
+while players were being killed by an unseen one.
 
     python tools/verify_hits.py
 """
@@ -33,12 +40,15 @@ TOUCH_MARGIN = 0.05      # SWING_TRAP_TOUCH_MARGIN
 # The lethal-box shrink is PER MODEL now (SwingTrapModel.extentShrink in
 # src/traps/swingTrapShapes.ts) and is read straight out of that file by
 # load_model(), so this tool cannot drift from what ships.
-# Current measured state: 1 unfair per axe at 0.63m (threshold 0.60), 0 on the
-# planks, 0 missed anywhere. Set to 1 rather than 0 so the gate holds the line
-# where it actually is; tighten it to 0 if that last case is ever fixed. Never
-# RAISE it to make a red build green - that is the failure this gate exists
-# to catch.
-ALLOWED_UNFAIR = 1
+# TIGHTENED TO 0 on 2026-08-19. This was 1, to allow one 0.63m kill per axe
+# that the old placement produced. Moving the axes into SWING_TRAP_PLACEMENTS
+# at scale 0.70 removed it: the measured state is now 0 unfair and 0 missed on
+# all six units, 37 kills per axe and 11 per plank across 23548 position-times
+# each. The gate holds the line where it actually is.
+#
+# Never RAISE this to make a red build green - that is the exact failure this
+# gate exists to catch. If a change adds an unfair kill, the change is wrong.
+ALLOWED_UNFAIR = 0
 TOTALS = {}
 SUBSTEPS = 3
 DT = 1.0 / 30.0
@@ -154,10 +164,40 @@ def box_lowest_y(cw, u, w, h):
     return cw[1] - (abs(u[1]) * h[0] + abs(w[1]) * h[1] + abs(n[1]) * h[2])
 
 
+# FLOOR_LEVELS_Y in src/config.ts. Mirrors floorSeparates() in swingTraps.ts.
+FLOOR_LEVELS_Y = [8.58, 7.65, 2.64, 0.0]
+
+
+def box_highest_y(cw, u, w, h):
+    n = cross(u, w)
+    return cw[1] + (abs(u[1]) * h[0] + abs(w[1]) * h[1] + abs(n[1]) * h[2])
+
+
+def floor_separates(b, feet_y):
+    """A whole floor slab between the box and the player's feet."""
+    top = box_highest_y(*b)
+    for level in FLOOR_LEVELS_Y:
+        if feet_y >= level - 0.05 and top < level - 0.05:
+            return True
+    return False
+
+
+def box_underside_near(b, p):
+    """How low the box hangs directly over p. Mirrors boxUndersideNear()."""
+    cw, u, w, h = b
+    n = cross(u, w)
+    d = tuple(p[k] - cw[k] for k in range(3))
+    du = max(-h[0], min(h[0], dot(d, u)))
+    dw = max(-h[1], min(h[1], dot(d, w)))
+    return cw[1] + u[1] * du + w[1] * dw - abs(n[1]) * h[2]
+
+
 def touches_at(unit, model, t, feet, bridge=True):
     for box in boxes_at(model, t):
         b = to_world(unit, box, model['shrink'])
-        if bridge and model['below'] and box_lowest_y(*b) <= feet[1] + 0.3:
+        if bridge and model['below'] and box_underside_near(b, feet) <= feet[1] + 0.3:
+            continue
+        if floor_separates(b, feet[1]):
             continue
         if oriented_box_hits(b[0], b[1], b[2], b[3], feet, TOUCH_MARGIN):
             return True
@@ -196,42 +236,110 @@ def capsule_to_points(pts, feet):
     return best
 
 
+# Memo for world_mesh. Every kill needs the mesh posed at the exact sub-step
+# time it happened, and posing it means transforming ~8000 surface points. The
+# sub-step times repeat constantly (SUBSTEPS per frame, NT frames), so without
+# this the tool re-does identical work thousands of times — which is what made
+# it take hours once the axes were moved somewhere players can actually reach.
+# Keyed per unit, and cleared between units so one axe cannot answer for another.
+_MESH_MEMO = {}
+
+
 def world_mesh(sampler, unit, t):
+    key = round(t, 6)
+    hit = _MESH_MEMO.get(key)
+    if hit is not None:
+        return hit
     pos, rot, scl, _ = unit
-    return [tuple(pos[k] + qrot(rot, tuple(p[j] * scl[j] for j in range(3)))[k] for k in range(3))
-            for p in sampler(t)]
-
-
-# ── placed units, straight out of the composite ────────────────────────────
-def placed():
-    d = json.load(open(os.path.join(ROOT, 'assets', 'scene', 'main.composite'), encoding='utf-8'))
-    names, tf = {}, {}
-    for comp in d.get('components', []):
-        if comp.get('name') == 'core-schema::Name':
-            for k, v in comp.get('data', {}).items():
-                names[k] = v.get('json', {}).get('value')
-        if comp.get('name') == 'core::Transform':
-            for k, v in comp.get('data', {}).items():
-                tf[k] = v.get('json', {})
-    out = {}
-    for k, nm in names.items():
-        if nm and ('fplank' in nm or 'pblade2' in nm):
-            t = tf.get(k, {})
-            p = t.get('position', {})
-            r = t.get('rotation', {})
-            s = t.get('scale', {})
-            pos = (p.get('x', 0), p.get('y', 0), p.get('z', 0))
-            rot = (r.get('x', 0), r.get('y', 0), r.get('z', 0), r.get('w', 1))
-            scl = (s.get('x', 1), s.get('y', 1), s.get('z', 1))
-            out[nm] = (pos, rot, scl, max(abs(x) for x in scl))
+    out = [tuple(pos[k] + qrot(rot, tuple(p[j] * scl[j] for j in range(3)))[k] for k in range(3))
+           for p in sampler(t)]
+    _MESH_MEMO[key] = out
     return out
 
 
+# model-file substring -> (shape const, clip). The PATH is not here on
+# purpose; it comes from each placed entity's own GltfContainer src.
+TRAP_MODELS = {'fplank': ('SWING_TRAP_FPLANK', 'TemplateHN.011Action.001'),
+               'blade': ('SWING_TRAP_PBLADE', 'pbaldeAction')}
+
+
+# ── placed units ───────────────────────────────────────────────────────────
+#
+# TWO SOURCES, because the game now has two.
+#
+# This used to read assets/scene/main.composite for everything, and that was
+# the blind spot that let the axes ship broken for a day. The composite is the
+# Creator Hub EDITOR's file; the runtime loads main.crdt. On 2026-08-19 they
+# disagreed about pblade2.glb_2 by eleven metres, so this tool kept reporting a
+# fair, unburied axe in a room the game had never put one in.
+#
+#   planks -> main.crdt      (still placed in the editor; read what SHIPS)
+#   axes   -> src/config.ts  (SWING_TRAP_PLACEMENTS; spawned from code now)
+#
+# Neither path goes near the composite any more. If a placement is not in the
+# file the runtime reads, this tool must not see it either.
+def placed_from_crdt():
+    """Plank placements, out of the file the runtime actually loads."""
+    import struct
+    d = open(os.path.join(ROOT, 'main.crdt'), 'rb').read()
+    off, gl, tf = 0, {}, {}
+    while off + 8 <= len(d):
+        ln, _ty = struct.unpack_from('<II', d, off)
+        if ln < 8 or off + ln > len(d):
+            break
+        ent, cid, _ts, dl = struct.unpack_from('<IIII', d, off + 8)
+        p = d[off + 24:off + 24 + dl]
+        if cid == 1041:  # GltfContainer, for the src string
+            i, src = 0, None
+            while i < len(p):
+                key = p[i]
+                i += 1
+                f, wt = key >> 3, key & 7
+                if wt == 2:
+                    n = p[i]
+                    i += 1
+                    v = p[i:i + n]
+                    i += n
+                    if f == 1:
+                        src = v.decode('utf-8', 'replace')
+                elif wt == 0:
+                    while p[i] & 0x80:
+                        i += 1
+                    i += 1
+                else:
+                    break
+            if src:
+                gl[ent] = src
+        elif cid == 1 and len(p) >= 44:  # Transform
+            tf[ent] = struct.unpack_from('<10fI', p, 0)
+        off += ln
+    out = {}
+    seen = {}
+    for ent, src in gl.items():
+        base = src.split('/')[-1]
+        if not any(k in base for k in TRAP_MODELS):
+            continue
+        t = tf.get(ent)
+        if t is None:
+            continue
+        seen[base] = seen.get(base, 0) + 1
+        nm = base if seen[base] == 1 else '%s_%d' % (base, seen[base])
+        scl = tuple(t[7:10])
+        # src carried alongside the transform: the model path comes from the
+        # SCENE, never from a constant in this file. A verifier with a
+        # hardcoded path measures the shipped boxes against whatever mesh it
+        # was last told about, which is how a model swap silently produces a
+        # green build for the wrong geometry.
+        out[nm] = (tuple(t[0:3]), tuple(t[3:7]), scl, max(abs(x) for x in scl), src)
+    return out
+
+
+def placed():
+    return placed_from_crdt()
+
+
 UNITS = placed()
-MODELS = {'fplank': ('SWING_TRAP_FPLANK', os.path.join(ROOT, 'assets', 'Models', 'fplank', 'fplank.glb'),
-                     'TemplateHN.011Action.001'),
-          'pblade2': ('SWING_TRAP_PBLADE', os.path.join(ROOT, 'assets', 'Models', 'pblade2', 'pblade2.glb'),
-                      'pbaldeAction')}
+
 
 FLOORS = [2.64, 7.65]
 STEP = 0.75
@@ -244,10 +352,12 @@ print(f'  player capsule r={PLAYER_RADIUS} h={PLAYER_HEIGHT}, touch margin {TOUC
 print(f'  grid {STEP}m out to {REACH}m, floors {FLOORS}, {NT} times per clip\n')
 
 for name in sorted(UNITS):
-    kind = 'fplank' if 'fplank' in name else 'pblade2'
-    const, path, clip = MODELS[kind]
+    entry = UNITS[name]
+    unit, src = entry[:4], entry[4]
+    kind = next(k for k in TRAP_MODELS if k in src)
+    const, clip = TRAP_MODELS[kind]
+    path = os.path.join(ROOT, *src.split('/'))
     model = load_model(const)
-    unit = UNITS[name]
     sample = None
     tested = kills = unfair = missed = bridged = 0
     worst_unfair = (0.0, None)
@@ -257,6 +367,7 @@ for name in sorted(UNITS):
     # cache the mesh surface per sampled time
     surf = {}
     sampler = G.make_surface_sampler(path, clip)
+    _MESH_MEMO.clear()  # the memo is per-unit: it bakes in this unit's transform
 
     for ti in range(NT):
         t = model['duration'] * ti / (NT - 1)

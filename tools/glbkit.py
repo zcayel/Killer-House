@@ -105,7 +105,39 @@ def slerp(a, b, t):
     return [c / n for c in v]
 
 
-def make_sampler(path, clip):
+# ── HANDEDNESS ─────────────────────────────────────────────────────────────
+# glTF is RIGHT-handed. Decentraland is LEFT-handed, and its loader negates X
+# when it imports a .glb. So a vertex this file reads at model-local (x, y, z)
+# is at (-x, y, z) in the engine.
+#
+# Confirmed in-game on 2026-08-20, not deduced: the scene drew every swing-trap
+# hit box twice — once as baked, once mirrored on X — and the MIRRORED set was
+# the one that rode the blade.
+#
+# Why it went unnoticed for days: every tool in this directory reads the raw
+# glTF and checks the bake against that same reading. Mirror both sides of a
+# comparison and it still passes. verify_hits.py reported 0 missed kills,
+# place_axes.py reported boxes sitting on the mesh to 5cm, and the shipped kill
+# volume was still a mirror image of the blade. A gate can only catch what it
+# does not share an assumption with.
+#
+# FIXED AT RUNTIME, not here: toWorld() in traps/swingTraps.ts negates X on
+# the baked box before placing it, so the shipped kill volume is in engine
+# space while the bake stays in glTF space. This flag is left in place (off)
+# because verify_hits.py compares boxes against the mesh and mirrors BOTH,
+# so that comparison is invariant; place_axes.py compares boxes against the
+# HOUSE, which is not mirrored, and so mirrors the boxes itself.
+MIRROR_X = False
+
+
+def dcl(p):
+    """Model-local glTF point -> model-local Decentraland point."""
+    return (-p[0], p[1], p[2]) if MIRROR_X else p
+
+
+def make_sampler(path, clip, part='visible'):
+    """Vertex sampler. `part` selects visible mesh or *_collider nodes;
+    see make_surface_sampler for why that choice exists."""
     g, bn = load(path)
     nodes = g['nodes']
     anim = next(a for a in g['animations'] if a.get('name') == clip)
@@ -149,9 +181,9 @@ def make_sampler(path, clip):
             M = mul(Pm, ntrs(n, o.get(i)))
             if 'mesh' in n:
                 nm = (n.get('name', '') + ' ' + g['meshes'][n['mesh']].get('name', '')).lower()
-                if 'collider' not in nm:
+                if ('collider' in nm) == (part == 'collider'):
                     for p in prim_pts(n['mesh']):
-                        pts.append(xf(M, p))
+                        pts.append(dcl(xf(M, p)))
             for c in n.get('children', []):
                 walk(c, M)
 
@@ -248,8 +280,22 @@ def worst_gap(kfs, sample, t, stride):
 SURF_TARGET = 900
 
 
-def make_surface_sampler(path, clip):
-    """Like glbkit.make_sampler but returns points spread over the TRIANGLE"""
+def make_surface_sampler(path, clip, part='visible'):
+    """Like glbkit.make_sampler but returns points spread over the TRIANGLE.
+
+    part='visible'  — sample the drawn mesh, skipping any *_collider node.
+                      This is the default and what fairness measurement wants:
+                      "did the thing the player can SEE touch them".
+    part='collider' — sample ONLY the *_collider nodes. Use when a model ships
+                      an authored collision shape and that shape, rather than
+                      the render mesh, is meant to be the hit volume.
+
+    A model whose collider is a separate ROOT node will not move with the
+    animation; check the hierarchy before trusting part='collider'. In
+    blade.glb the collider is a child of the animated node, so it does move.
+    """
+    if part not in ('visible', 'collider'):
+        raise ValueError("part must be 'visible' or 'collider'")
     g, bn = load(path)
     nodes = g['nodes']
     anim = next(a for a in g['animations'] if a.get('name') == clip)
@@ -319,7 +365,7 @@ def make_surface_sampler(path, clip):
             M = mul(Pm, ntrs(n, o.get(i)))
             if 'mesh' in n:
                 nm = (n.get('name', '') + ' ' + g['meshes'][n['mesh']].get('name', '')).lower()
-                if 'collider' not in nm:
+                if ('collider' in nm) == (part == 'collider'):
                     for (p0, p1, p2) in mesh_tris(n['mesh']):
                         q0, q1, q2 = xf(M, p0), xf(M, p1), xf(M, p2)
                         e1 = [q1[k] - q0[k] for k in range(3)]
@@ -331,7 +377,8 @@ def make_surface_sampler(path, clip):
                         side = math.sqrt(max(area, 1e-9) * 2)
                         lvl = max(1, min(64, int(side / SPACING) + 1))
                         for (u1, v1, w1) in bary(lvl):
-                            pts.append(tuple(q0[k] * u1 + q1[k] * v1 + q2[k] * w1 for k in range(3)))
+                            pts.append(dcl(tuple(q0[k] * u1 + q1[k] * v1 + q2[k] * w1
+                                                 for k in range(3))))
             for c in n.get('children', []):
                 walk(c, M)
 

@@ -103,8 +103,9 @@ import {
 } from '../config'
 import { killPlayer, isInvulnerable } from '../gameState'
 import { addSafeSystem } from '../safeSystem'
+import { volumeCylinder, endVolumes, VOLUME_COLOURS } from '../debug/killVolumes'
 import { playerPosition } from '../playerTracker'
-import { playSoundAt, SOUND_SKELETON_ATTACK, SOUND_BONE_RATTLE } from '../sounds'
+import { playSoundAt, SOUND_SKELETON_ATTACK, SOUND_BONE_RATTLE, gain } from '../sounds'
 import { isMobileNow } from '../platform'
 
 /**
@@ -490,7 +491,9 @@ function setRattle(s: Skeleton, wantVol: number) {
   s.rattleVol = wantVol
   const a = AudioSource.getMutable(s.audio)
   a.playing = wantVol > 0
-  a.volume = wantVol
+  // Through gain() like every other sound — MASTER_VOLUME has to reach the
+  // skeleton's rattle too, or the scene gets louder around it and it doesn't.
+  a.volume = gain(wantVol)
 }
 
 // ───────────────────────────────── movement ──────────────────────────────────
@@ -680,6 +683,7 @@ export function nearestSkeletonDistance(): number {
 // ──────────────────────────────── the system ─────────────────────────────────
 
 function skeletonSystem(dt: number) {
+  let drawnSkeletons = 0
   for (const s of skeletons) {
     if (!s.active) continue
     if (s.animLock > 0) s.animLock -= dt
@@ -791,6 +795,10 @@ function skeletonSystem(dt: number) {
         if (canReachMe(s) && !isInvulnerable()) {
           killPlayer('Torn apart by a skeleton')
         }
+        // Debug overlay: exactly what canReachMe() tests — a flat radius plus
+        // the body-height band, drawn at the skeleton's own feet.
+        volumeCylinder('skeleton', drawnSkeletons++, here, SKELETON_KILL_RADIUS,
+                       here.y, here.y + SKELETON_BODY_HEIGHT, VOLUME_COLOURS.skeleton)
         const flat = Math.hypot(prey.x - here.x, prey.z - here.z)
         if (flat < SKELETON_KILL_RADIUS) {
           playOneShot(s, SKELETON_ANIM.attack, 1.1)
@@ -802,6 +810,8 @@ function skeletonSystem(dt: number) {
       }
     }
   }
+
+  endVolumes('skeleton', drawnSkeletons)
 }
 
 // ─────────────────────────────────── setup ───────────────────────────────────
@@ -922,7 +932,12 @@ export function initSkeletons() {
 
     const audio = engine.addEntity()
     Transform.create(audio, { position: Vector3.create(0, 1, 0), parent: root })
-    AudioSource.create(audio, { audioClipUrl: SOUND_BONE_RATTLE, playing: true, loop: true, volume: 0.55 })
+    AudioSource.create(audio, {
+      audioClipUrl: SOUND_BONE_RATTLE,
+      playing: true,
+      loop: true,
+      volume: gain(0.55)
+    })
 
     const s: Skeleton = {
       root,

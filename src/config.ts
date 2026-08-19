@@ -44,12 +44,37 @@ export const RESPAWN_GRACE_SECONDS = 2 // after respawning, nothing can kill you
 export const DEATH_SHAKE_SECONDS = 0.6 // how long the camera shakes after a hit
 export const DEATH_SHAKE_AMPLITUDE = 0.35 // meters of camera jitter at the start of the shake
 export const BLOOD_MAX_STAINS = 12 // oldest floor stain is removed beyond this
+// THREE SPLAT DESIGNS, cycled in order — on request 2026-08-20.
+//
+// One decal repeated reads as a sticker; with BLOOD_MAX_STAINS at 12 you can
+// see a dozen identical marks at once. [2] and [3] are the shipped splat
+// mirrored, rotated off-axis and re-proportioned, which changes the SILHOUETTE
+// — the spawn code already applies a random yaw, so a plain rotation would have
+// been invisible.
 export const BLOOD_POOL_TEXTURE = 'assets/scene/Textures/blood_pool.png' // floor decal at the death spot
+export const BLOOD_POOL_TEXTURES = [
+  BLOOD_POOL_TEXTURE,
+  'assets/scene/Textures/blood_pool_2.png',
+  'assets/scene/Textures/blood_pool_3.png'
+]
 // (BLOOD_STAIN_GROUND_SEARCH_DISTANCE lived here — it fed a straight-down
 // raycast meant to drop a stain onto the floor beneath a mid-air death. The
 // raycast never actually worked; stains are snapped to FLOOR_LEVELS_Y now,
 // declared further down beside HOUSE_RECT. See floorBeneath() in
 // effects/deathEffects.ts for what was wrong with it.)
+// ELECTROCUTION — the cartoon X-ray flash when lightning takes you.
+//
+// A blue-white star burst with the skeleton lit up inside it, drawn at the spot
+// you were standing. Blue-white rather than the traditional yellow so it reads
+// as OUR lightning: it is the same palette as the strike flash.
+//
+// The burst texture is drawn procedurally (a 17-point irregular star polygon
+// with a hot white core falling to a saturated rim) so it carries no licence.
+export const ELECTROCUTION_TEXTURE = 'assets/scene/Textures/electrocution_burst.png'
+export const ELECTROCUTION_SECONDS = 0.9   // whole effect, burst and skeleton
+export const ELECTROCUTION_BURST_SIZE = 4.2 // metres across at full spread
+export const ELECTROCUTION_CAUSE = 'Struck by lightning' // must match lightning.ts
+
 export const BLOOD_OVERLAY_TEXTURE = 'assets/scene/Textures/blood_overlay.png' // screen splatter during the death screen
 
 /**
@@ -867,8 +892,25 @@ export const SWING_TRAP_COOLDOWN_SECONDS = 2.0
 // It is a debug view, not a shipping feature: it spawns one entity per box
 // per unit (41 x 6 for the current bake) and updates their local transforms
 // every frame. Leave it false unless you are checking alignment.
-export const SWING_TRAP_SHOW_HITBOXES = false
+// SHOW EVERY KILL VOLUME IN THE SCENE.
+//
+// One switch for all of them — blades, planks, wall spikes, chandelier,
+// lightning, skeleton, fence tips — drawn by debug/killVolumes.ts, colour-coded
+// per hazard. Fall damage has no volume (it is a descent-height rule) so it is
+// the one killer with nothing to draw.
+//
+// This exists because a kill volume you cannot see is one you cannot check.
+// The swing-trap boxes were the MIRROR IMAGE of the blade for days and every
+// offline gate passed, because they all measured the bake against the same
+// glTF the bake came from. Drawing the two candidates in-world settled it in a
+// single preview. When a hazard "kills without touching", turn this on first.
+//
+// Costs an entity per box per hazard, updated every frame. Ship it false.
+export const SHOW_KILL_VOLUMES = false
 
+// Swing traps specifically. Kept separate so the blades can be inspected on
+// their own without the rest of the scene lit up.
+export const SWING_TRAP_SHOW_HITBOXES = false
 export const SWING_TRAP_TOUCH_MARGIN = 0.05
 
 // The lethal-box shrink MOVED to SwingTrapModel.extentShrink in
@@ -894,15 +936,94 @@ export const SWING_TRAP_TOUCH_MARGIN = 0.05
 // 10 on request (2026-08-18), down from 30. Still well over the clip's own
 // 4.5s, so the "find it, commit, climb" reason above is intact; 30 just left
 // the board lying down for most of a round.
-export const SWING_TRAP_PLANK_HOLD_SECONDS = 10
+// 6 on request 2026-08-20 (10 -> 8 -> 6). Still above the clip's own 4.5s, so
+// the board is genuinely held rather than just finishing its animation, but the
+// window to spot it, commit and climb is now tight — if the upper floor starts
+// feeling unreachable, this is the number.
+// Pause between a plank arming and the board actually dropping.
+//
+// 0.3 on request 2026-08-20 (0.5 first, then tightened). With the trigger
+// sitting exactly on the landing patch and the drop taking ~0.6s, there was no
+// reaction window at all — you stepped on the spot and it was already on you.
+// This is the window, and it is deliberately short: enough to register the
+// whoosh and move, not enough to stroll out.
+//
+// Only the planks have it: a blade telegraphs itself by being a visible thing
+// swinging at you, a falling board does not.
+export const SWING_TRAP_PLANK_TRIGGER_DELAY = 0.3
+
+export const SWING_TRAP_PLANK_HOLD_SECONDS = 6
 
 // It lands twice: the hit, then the board settling back down. Second one is
 // quieter, which is what makes it read as one event rather than two.
+// 35% higher on request 2026-08-20. NOTE: DCL clamps an AudioSource at 1.0,
+// so raising this alone does nothing — the impact was already at the ceiling.
+// The bounce and the swing are lowered to match instead, which makes the
+// landing 35% louder RELATIVE to the rest of the trap, which is the audible
+// result that was asked for.
+// DUST BURST when the plank slams into the floor.
+//
+// A board that heavy landing on a dusty floor should throw something up; without
+// it the landing reads as the board simply teleporting to the ground. Puffs are
+// spawned ALONG the fallen board rather than in one spot, because the whole
+// length hits at once.
+//
+// The texture is drawn procedurally (a sum of offset Gaussian blobs inside a
+// radial falloff) so it carries no licence — see tools notes in the repo.
+export const PLANK_DUST_TEXTURE = 'assets/scene/Textures/dust_puff.png'
+export const PLANK_DUST_PUFFS = 7      // spread along the board's length
+export const PLANK_DUST_SECONDS = 0.55 // fast: it is a slam, not a fog
+export const PLANK_DUST_SIZE = 1.5     // metres across at full spread
+export const PLANK_DUST_RISE = 0.9     // how far a puff drifts up before it goes
+
 export const SWING_TRAP_PLANK_IMPACT_VOLUME = 1.0
-export const SWING_TRAP_PLANK_BOUNCE_VOLUME = 0.45
+export const SWING_TRAP_PLANK_BOUNCE_VOLUME = 0.33
 export const SWING_TRAP_PLANK_BOUNCE_DELAY = 0.19 // seconds after the first
 // Whoosh as a unit starts moving, at the pivot.
-export const SWING_TRAP_SWING_VOLUME = 0.8
+export const SWING_TRAP_SWING_VOLUME = 0.59
+// The axes 30% above the plank whoosh, on request 2026-08-20. Separate knob
+// because they are separate sounds now (SOUND_AXE_SWING) and a 9m blade should
+// carry further than a board tipping over.
+export const SWING_TRAP_AXE_VOLUME = 0.77
+
+// WHERE THE AXES ARE — IN CODE, NOT IN CREATOR HUB.
+//
+// The four planks are still adopted from the editor: they are drawbridges cut
+// into the house geometry and their placement is part of the level. The two
+// pblade2 axes are SPAWNED FROM HERE instead, because placing them in the
+// editor was the direct cause of the phantom kills, three separate ways:
+//
+//   1. TWO FILES DISAGREED. Creator Hub writes assets/scene/main.composite;
+//      the runtime loads main.crdt. On 2026-08-19 those held different
+//      positions for pblade2.glb_2 — (15.75, 11.75, 8.00) in the editor,
+//      (22.86, 11.75, 19.25) in the game, eleven metres apart. Every
+//      verification tool read the composite, so the axe was being checked in a
+//      room it had never actually been in. That is why it kept passing.
+//   2. THE GIZMO IS NOT THE AXE. pblade2.glb hangs 5.2-6.2m in -z and 2.1-4.8m
+//      in -y from its own origin, so the handle you drag in the editor is about
+//      5.7m from the blade you are aiming. "I put it back in its last position"
+//      and "the blade is where it was" are not the same statement for this
+//      model.
+//   3. FULL SCALE CANNOT FIT INDOORS. The shrunk sweep is 6.70m tall and the
+//      biggest gap between two floor levels in this house is 5.01m (2.64 up to
+//      7.65). At scale 1 the arc reaches through both upper slabs and kills
+//      people on a storey that cannot see it. Measured on the shipped
+//      placements: 8.8% and 16.1% of each arc was inside solid geometry —
+//      swinging through walls, which is a phantom kill by definition.
+//
+// Points 1 and 2 are FIXED by this list existing — one source of truth, in
+// git, and no gizmo to misread. Point 3 is a deliberate trade: the authored
+// positions below are kept at the level's request even though their arcs do
+// pass through walls, and the exact cost is recorded on each entry and in
+// ACCEPTED_BURIED in tools/place_axes.py so it stays a decision rather than
+// drifting back into a surprise.
+//
+// CHANGING THESE: edit the numbers here, then run
+//     python tools/place_axes.py --check-code
+//     python tools/verify_hits.py
+// Do not move the axes in Creator Hub. Any entity named pblade2.glb* left in
+// the scene is deleted at load (see spawnPlacedAxes in traps/swingTraps.ts) so
+// an editor copy cannot come back as a second, unverified axe.
 
 // ---------------------------------------------------------------------------
 // SKELETON — one walking skeleton guarding the yard (official DCL Halloween
@@ -1203,7 +1324,13 @@ export const LIGHTNING_SPEED = 1.35
  * to not be standing on. Every entity below scales with it — bolt quads, sky
  * flashes and impact lights are all built per bolt at init.
  */
-export const LIGHTNING_BOLT_COUNT = 2
+// 4 on request 2026-08-20, up from 2. Each bolt carries a full
+// LIGHTNING_KILL_RADIUS, so this doubles the lethal ground again — the yard is
+// meaningfully harder to cross during a storm now. Everything downstream scales
+// automatically (bolt quads, sky flashes, impact lights are all built per bolt
+// at init, and pickStrikePoint spaces them apart), so this is the only number
+// that needs changing.
+export const LIGHTNING_BOLT_COUNT = 4
 /**
  * Metres apart the strike points of one strike must be.
  *
@@ -1224,8 +1351,8 @@ export const LIGHTNING_MIN_SEPARATION = 8
  */
 // TWICE AS OFTEN, on request: halved from 28-42s. The storm is the scene's
 // only ambient pressure, and one strike every ~35s left long dead stretches.
-export const LIGHTNING_STRIKE_INTERVAL_MIN = 14
-export const LIGHTNING_STRIKE_INTERVAL_MAX = 21
+export const LIGHTNING_STRIKE_INTERVAL_MIN = 9
+export const LIGHTNING_STRIKE_INTERVAL_MAX = 9
 
 // THE STRIKE FLASH — a white-blue wash over the screen at the crack, on top of
 // the existing blackout. The blackout alone reads as the lights failing; this
@@ -1592,7 +1719,27 @@ export const SKELETON_MAX_STEP = 0.6
 // climbable spikes with no hitbox on the other. Re-check these four numbers
 // any time the gate or fence is moved; nothing derives them at runtime.
 export const FENCE_LINES = { minX: 4.25, maxX: 31.1, minZ: 0.75, maxZ: 31.0 }
-export const FENCE_TIP_MARGIN = 0.35 // how close (horizontally) to a fence line counts as "on it"
+// HOW CLOSE (horizontally) TO A FENCE LINE COUNTS AS "ON IT".
+//
+// 0.75, up from 0.35. This MUST exceed how close a player can physically get,
+// or the trap is unreachable and simply never fires:
+//
+//   player capsule radius            0.400 m
+//   fence half-thickness             0.117 m   (model z span 0.233)
+//   closest a player centre can get  0.517 m
+//
+// The iron fence is solid (invisibleMeshesCollisionMask = CL_PHYSICS), so the
+// collider holds you 0.517m out while the old 0.35m kill zone sat INSIDE that.
+// Reported from play three times as "the fence isn't killing the player", and
+// it was right: the condition was unsatisfiable.
+//
+// 0.55, tightened from 0.75 on request ("the pink hit boxes are too big,
+// reduce it to the actual mesh"). 0.517 is a HARD FLOOR — below it the collider
+// holds the player outside the kill zone and the trap becomes unreachable
+// again, which is the bug that took three passes to find. 0.55 leaves 33mm of
+// slack for a player pressed in at an angle against a corner post, and is as
+// close to the 0.117m mesh half-thickness as a solid fence physically allows.
+export const FENCE_TIP_MARGIN = 0.55
 
 // THE GATE — the gap in the south fence the player spawns in and walks
 // through. Read off the pillars either side of it: pilar.glb_3 at x 24.31 and
@@ -1723,8 +1870,36 @@ export const FORCE_FIELD_COOLDOWN = 0.6
 // zap land inside FORCE_FIELD_SECONDS' 0.55s flare and the field's hum rings
 // on a little past it, which is how an impact actually behaves. Slightly under
 // full volume so a player pinballing along the boundary isn't shouted at.
+// MASTER VOLUME — one multiplier over every sound the scene plays.
+//
+// 1.2 on request 2026-08-20: everything 20% louder. Applied in sounds.ts at the
+// single point where an AudioSource is created, so it covers the per-sound
+// constants below AND the volumes passed inline at call sites — of which there
+// are plenty (playSoundAt(..., 1.1), heartbeat, ambient). Scaling those by hand
+// would have missed some and drifted apart the moment anyone added a sound.
+//
+// Clamped to 1.0 per source when applied: DCL treats volume above 1 as 1, so
+// values over that silently do nothing rather than getting louder. Anything
+// already at 1.0 (the plank impact) is therefore unchanged by this — to make
+// the mix louder overall, lower the loud ones rather than raising the rest.
+export const MASTER_VOLUME = 1.2
+
 export const FORCE_FIELD_SOUND_VOLUME = 0.85
-export const FENCE_TIP_Y_MIN = 1.9 // feet height where the tips start to hurt (clear of single AND double jumps beside it)
+// THE HEIGHT BAND THE FENCE KILLS IN — the player's FEET must be inside it.
+//
+// Was 1.90..3.20 and effectively never fired. Measured 2026-08-20: the fence
+// model is 3.38m tall, so at scale 1.0 on the ground its tips are at 3.03m —
+// you had to be standing ON TOP of a 3m fence for your feet to enter the band.
+// Worse, the two scaled-1.2 fences at y 1.07 have tips at 4.70m, entirely
+// ABOVE the old ceiling, so those could never kill at any height.
+//
+// Reported from play, twice: "the outer wall fence aren't killing the player".
+//
+// Now 0.0..4.8: the spikes are lethal on contact at any height up to the
+// tallest fence's tips. The gateway cut-out (FENCE_GATE_MIN_X/MAX_X) is what
+// keeps the spawn point survivable — the player spawns 0.25m from the south
+// line, well inside FENCE_TIP_MARGIN.
+export const FENCE_TIP_Y_MIN = 0.0 // ground level: touching the spikes kills
 // JUST ABOVE THE REAL FENCE. Measured, not guessed: pilar.glb's collider tops
 // out at y 2.603 and HWN20_IronfFence_04's at y 3.028, and those two models are
 // the entire perimeter. 3.2 clears the taller of them by 17cm.
@@ -1750,6 +1925,11 @@ export const FENCE_TIP_Y_MIN = 1.9 // feet height where the tips start to hurt (
 //
 // This is the AIRBORNE half of keeping players in. The ground-level half is
 // plotBoundary.ts, which pushes you back rather than killing you.
+// 3.2: the real top of a standard fence (model 3.376 tall at scale 1.0 on the
+// ground = tips at 3.03m) plus a little. Was 4.8 to cover the two scaled-1.2
+// fences whose tips reach 4.70m — those still kill, just along their body
+// rather than at their very tips, and 4.8 made the volume a storey and a half
+// tall everywhere else for the sake of two posts.
 export const FENCE_TIP_Y_MAX = 3.2
 
 // ---------------------------------------------------------------------------
@@ -1773,6 +1953,19 @@ export const CHANDELIER_BOTTOM_OFFSET = -0.613
 // this test compares the player's CENTRE to the chandelier's, so the body
 // radius has to be baked in here.
 export const CHANDELIER_KILL_RADIUS = 1.4
+
+// The hover hint on the chandelier. It reads as scenery otherwise — nothing
+// about a light fitting says "this is the lift to the upper floor", and the
+// one thing you must NOT do is stand under it. Naming the action turns a trap
+// into a choice.
+//
+// It is deliberately a hint and not a prompt: there is no button to press, you
+// genuinely just jump on as it comes past. onPointerDown does nothing.
+export const CHANDELIER_HOVER_TEXT = 'Jump to ride'
+// Pointer target size. chandelift.glb measures 2.85 x 1.51 x 2.85 about its
+// own origin, so this covers the visible fitting without spilling into the
+// space beside it where a stray hover would be confusing.
+export const CHANDELIER_HOVER_SIZE = Vector3.create(2.85, 1.51, 2.85)
 
 
 // ---------------------------------------------------------------------------

@@ -40,6 +40,7 @@ import {
 import { playerPosition, predictPlayerPosition } from '../playerTracker'
 import { killPlayer, isInvulnerable } from '../gameState'
 import { boxHitsPlayer } from '../hits'
+import { volumeBox, endVolumes, VOLUME_COLOURS } from '../debug/killVolumes'
 import { playSoundAt, SOUND_SPIKE } from '../sounds'
 import { addSafeSystem } from '../safeSystem'
 
@@ -166,9 +167,35 @@ function buildUnit(hidden: Vector3, extended: Vector3, rotation: Vector3): Spike
  * WALL_SPIKE_MODEL_BOXES rotated and scaled for one unit, as offsets from its
  * entity position — the form boxHitsPlayer wants.
  */
+/**
+ * WALL_SPIKE_MODEL_BOXES are baked from the raw glTF, and X IS NEGATED HERE
+ * before anything else happens to them.
+ *
+ * Same reason as toWorld() in swingTraps.ts: glTF is right-handed, Decentraland
+ * is left-handed, and its loader mirrors a .glb on X when it imports it. Any
+ * volume baked out of a model file is therefore the mirror image of where the
+ * engine actually draws that mesh, and has to be flipped back.
+ *
+ * Confirmed the same way the blades were — by drawing the volume in-world and
+ * looking at it (SHOW_KILL_VOLUMES in config.ts), not by measuring, because
+ * every offline tool here reads the same glTF the bake came from and so mirrors
+ * both sides of its own comparison. Corroborated independently: mirrored, the
+ * house mesh sits 0.51m past FENCE_LINES instead of 3.62m.
+ *
+ * NOT applied to the skeleton, lightning, or chandelier volumes — those are
+ * built from live entity Transforms and hand-measured constants, never from a
+ * model file, so there is nothing mirrored about them.
+ *
+ * A negated X swaps which corner is min and which is max, so the AABB is
+ * rebuilt from all 8 corners below rather than negated in place.
+ */
 function transformedBoxes(rotation: Quaternion, scale: Vector3) {
   const out: { min: Vector3; max: Vector3 }[] = []
-  for (const b of WALL_SPIKE_MODEL_BOXES) {
+  for (const raw of WALL_SPIKE_MODEL_BOXES) {
+    const b = {
+      min: Vector3.create(-raw.max.x, raw.min.y, raw.min.z),
+      max: Vector3.create(-raw.min.x, raw.max.y, raw.max.z)
+    }
     let mnx = Infinity
     let mny = Infinity
     let mnz = Infinity
@@ -439,8 +466,23 @@ function spikesSystem(dt: number) {
   // spikes that never triggered a death.
   const predicted = predictPlayerPosition(WALL_SPIKE_LOOKAHEAD_SECONDS)
 
+  let drawn = 0
   for (const unit of units) {
     unit.timer -= dt
+
+    // Debug overlay: the same boxes touchingSpike() tests, at the same travel.
+    // Drawn unconditionally (not only while lethal) so you can see where the
+    // spikes WILL be before they fire.
+    const at = Vector3.lerp(unit.hidden, unit.extended, unit.travel)
+    for (const b of unit.boxes) {
+      volumeBox(
+        'spike',
+        drawn++,
+        Vector3.create(at.x + b.min.x, at.y + b.min.y, at.z + b.min.z),
+        Vector3.create(at.x + b.max.x, at.y + b.max.y, at.z + b.max.z),
+        VOLUME_COLOURS.spike
+      )
+    }
 
     // ONE lethal check, every frame, in every state: if the spikes are
     // visibly out of the wall at all and you're touching them, you die.
@@ -506,6 +548,8 @@ function spikesSystem(dt: number) {
         break
     }
   }
+
+  endVolumes('spike', drawn)
 }
 
 export function initWallSpikes() {
