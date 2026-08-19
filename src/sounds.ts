@@ -13,12 +13,50 @@ import { onPlayerDeath, gameStarted, isPlayerDead } from './gameState'
 import { playerPosition } from './playerTracker'
 import { nearestSkeletonDistance, playerInYard } from './enemies/skeletons'
 import { addSafeSystem } from './safeSystem'
+import { MASTER_VOLUME } from './config'
 
 export const SOUND_AMBIENT = 'assets/sounds/ambient.mp3'
 export const SOUND_SKELETON_ATTACK = 'assets/sounds/skeleton_attack.mp3'
+/**
+ * SIX DEATH SOUNDS, picked at random — on request 2026-08-20.
+ *
+ * One sample is fine the first time you die and grating by the tenth, and this
+ * scene kills you a lot. [1] is the original; [2]-[6] are the same splat
+ * re-pitched and re-filtered (deeper and heavier, sharper and closer, muffled
+ * as if a room away, a brittle bone crack, and a cavernous one with a tail).
+ * Derived from the shipped sample on purpose — five unrelated downloads would
+ * not sit in the same sonic world as each other or as the rest of the scene.
+ */
 export const SOUND_DEATH = 'assets/sounds/death_splat.wav'
+const DEATH_SOUNDS = [
+  SOUND_DEATH,
+  'assets/sounds/death_2.wav',
+  'assets/sounds/death_3.wav',
+  'assets/sounds/death_4.wav',
+  'assets/sounds/death_5.wav',
+  'assets/sounds/death_6.wav'
+]
+/** Last one played, so the same death never lands twice in a row. */
+let lastDeathSound = -1
+
+function pickDeathSound(): string {
+  if (DEATH_SOUNDS.length < 2) return DEATH_SOUNDS[0]
+  let i = lastDeathSound
+  while (i === lastDeathSound) i = Math.floor(Math.random() * DEATH_SOUNDS.length)
+  lastDeathSound = i
+  return DEATH_SOUNDS[i]
+}
 export const SOUND_SPIKE = 'assets/sounds/spike_thrust.mp3'
 export const SOUND_SWING = 'assets/sounds/swing.mp3'
+/**
+ * The axes get their own whoosh — the planks keep SOUND_SWING.
+ *
+ * A 9m blade and a falling board should not make the same noise. Synthesised
+ * rather than downloaded, so it carries no licence with it: three layers of
+ * filtered noise (mid band for the air being cut, a low band for the weight
+ * behind it, a bright spike for the edge passing you), 0.8s.
+ */
+export const SOUND_AXE_SWING = 'assets/sounds/axe_swing.wav'
 export const SOUND_HEARTBEAT = 'assets/sounds/heartbeat.mp3' // CC0, freesound #485076
 export const SOUND_BONE_RATTLE = 'assets/sounds/bone_rattle.mp3' // CC0, freesound #202102
 export const SOUND_CANDLE_LIGHT = 'assets/sounds/candle_lit.mp3' // plays once a candle is fully lit
@@ -42,10 +80,29 @@ const oneShots: { entity: Entity; ttl: number }[] = []
  * distance, instead of the normal positional falloff — a match/reward beat
  * everyone should hear, not just whoever's standing close.
  */
+/**
+ * MASTER_VOLUME applied, clamped to what the engine will actually honour.
+ *
+ * DCL caps an AudioSource at 1.0 and silently ignores anything above, so a
+ * sound already at full volume cannot be raised — clamping here makes that
+ * explicit rather than leaving a number in the code that looks like it does
+ * something. Every AudioSource in this file goes through it.
+ */
+export function gain(v: number): number {
+  return Math.min(1, v * MASTER_VOLUME)
+}
+
 export function playSoundAt(src: string, pos: Vector3, volume = 1, pitch = 1, global = false) {
   const e = engine.addEntity()
   Transform.create(e, { position: Vector3.create(pos.x, pos.y, pos.z) })
-  AudioSource.create(e, { audioClipUrl: src, playing: true, loop: false, volume, pitch, global })
+  AudioSource.create(e, {
+    audioClipUrl: src,
+    playing: true,
+    loop: false,
+    volume: gain(volume),
+    pitch,
+    global
+  })
   oneShots.push({ entity: e, ttl: 6 })
 }
 
@@ -79,9 +136,9 @@ function tensionSystem(dt: number) {
     // muffled dread instead of a full false alarm.
     if (!playerInYard()) fear *= 0.35
     const hb = AudioSource.getMutable(heartbeatEntity)
-    hb.volume = fear * 0.9
+    hb.volume = gain(fear * 0.9)
     hb.playing = gameStarted && !isPlayerDead && fear > 0.03
-    AudioSource.getMutable(ambientEntity).volume = AMBIENT_VOLUME * (1 - 0.65 * fear)
+    AudioSource.getMutable(ambientEntity).volume = gain(AMBIENT_VOLUME * (1 - 0.65 * fear))
   }
 }
 
@@ -89,13 +146,13 @@ export function initSounds() {
   // Spooky ambience, parented to the player so it's always audible
   ambientEntity = engine.addEntity()
   Transform.create(ambientEntity, { parent: engine.PlayerEntity })
-  AudioSource.create(ambientEntity, { audioClipUrl: SOUND_AMBIENT, playing: true, loop: true, volume: AMBIENT_VOLUME })
+  AudioSource.create(ambientEntity, { audioClipUrl: SOUND_AMBIENT, playing: true, loop: true, volume: gain(AMBIENT_VOLUME) })
 
   heartbeatEntity = engine.addEntity()
   Transform.create(heartbeatEntity, { parent: engine.PlayerEntity })
   AudioSource.create(heartbeatEntity, { audioClipUrl: SOUND_HEARTBEAT, playing: false, loop: true, volume: 0 })
 
-  onPlayerDeath(() => playSoundAt(SOUND_DEATH, playerPosition, 1))
+  onPlayerDeath(() => playSoundAt(pickDeathSound(), playerPosition, 1))
 
   addSafeSystem(cleanupSystem, 'soundsCleanupSystem')
   addSafeSystem(tensionSystem, 'soundsTensionSystem')

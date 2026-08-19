@@ -39,7 +39,17 @@
  * Per-client, like every other hazard here — no syncing, no host election.
  */
 
-import { engine, Transform, Animator, MeshRenderer, Material, Entity } from '@dcl/sdk/ecs'
+import {
+  engine,
+  Transform,
+  Animator,
+  MeshRenderer,
+  Material,
+  Billboard,
+  BillboardMode,
+  MaterialTransparencyMode,
+  Entity
+} from '@dcl/sdk/ecs'
 import { Vector3, Quaternion, Color4 } from '@dcl/sdk/math'
 import {
   SWING_TRAP_LOOKAHEAD_SECONDS,
@@ -48,19 +58,27 @@ import {
   SWING_TRAP_TOUCH_MARGIN,
   SWING_TRAP_SHOW_HITBOXES,
   SWING_TRAP_PLANK_HOLD_SECONDS,
+  SWING_TRAP_PLANK_TRIGGER_DELAY,
   SWING_TRAP_PLANK_IMPACT_VOLUME,
   SWING_TRAP_PLANK_BOUNCE_VOLUME,
   SWING_TRAP_PLANK_BOUNCE_DELAY,
-  SWING_TRAP_SWING_VOLUME
+  SWING_TRAP_SWING_VOLUME,
+  SWING_TRAP_AXE_VOLUME,
+  PLANK_DUST_TEXTURE,
+  PLANK_DUST_PUFFS,
+  PLANK_DUST_SECONDS,
+  PLANK_DUST_SIZE,
+  PLANK_DUST_RISE,
+  FLOOR_LEVELS_Y
 } from '../config'
-import { playSoundAt, SOUND_WOOD_IMPACT, SOUND_SWING } from '../sounds'
+import { playSoundAt, SOUND_WOOD_IMPACT, SOUND_SWING, SOUND_AXE_SWING } from '../sounds'
 import { SWING_TRAP_UNITS, SwingTrapModel, SwingBox } from './swingTrapShapes'
 import { playerPosition, predictPlayerPosition } from '../playerTracker'
 import { killPlayer, isInvulnerable } from '../gameState'
 import { orientedBoxHitsPlayer } from '../hits'
 import { addSafeSystem } from '../safeSystem'
 
-type SwingState = 'idle' | 'swinging' | 'cooldown'
+type SwingState = 'idle' | 'armed' | 'swinging' | 'cooldown'
 
 /** A baked box placed in the world: centre, two axes, half-extents. */
 interface WorldBox {
@@ -100,6 +118,7 @@ interface SwingUnit {
 const units: SwingUnit[] = []
 const pending: string[] = []
 let retries = 0
+
 
 /**
  * The unit's transform in WORLD space, composed down its parent chain.
@@ -170,12 +189,34 @@ function boxesAt(model: SwingTrapModel, t: number): SwingBox[] {
   return out
 }
 
-/** Put a model-space box where the unit actually stands. */
+/**
+ * Put a model-space box where the unit actually stands.
+ *
+ * X IS NEGATED FIRST. glTF is right-handed, Decentraland is left-handed, and
+ * its loader mirrors a .glb on X when it imports it — so a box baked from the
+ * raw glTF is the mirror image of where the engine actually draws that part of
+ * the mesh. Everything downstream of this was correct; the input was flipped.
+ *
+ * Confirmed in-game 2026-08-20 rather than deduced: the scene drew both
+ * candidates at once, red as-baked and blue mirrored, and the blue set was the
+ * one that rode the blade. That test is why this line is one character of
+ * certainty instead of a guess.
+ *
+ * Why every gate missed it: tools/verify_hits.py measures the baked boxes
+ * against the mesh read out of the SAME glTF, so it mirrors both sides of its
+ * own comparison and passes either way. It reported 0 missed kills while the
+ * shipped kill volume was a mirror image of the blade. tools/place_axes.py
+ * compares against the HOUSE instead, which is not mirrored, so it applies the
+ * same negation in place().
+ */
 function toWorld(unit: SwingUnit, box: SwingBox): WorldBox {
+  const c = Vector3.create(-box.c.x, box.c.y, box.c.z)
+  const u = Vector3.create(-box.u.x, box.u.y, box.u.z)
+  const w = Vector3.create(-box.w.x, box.w.y, box.w.z)
   return {
-    c: Vector3.add(unit.origin, Vector3.rotate(Vector3.multiply(box.c, unit.scale), unit.rotation)),
-    u: Vector3.rotate(box.u, unit.rotation),
-    w: Vector3.rotate(box.w, unit.rotation),
+    c: Vector3.add(unit.origin, Vector3.rotate(Vector3.multiply(c, unit.scale), unit.rotation)),
+    u: Vector3.rotate(u, unit.rotation),
+    w: Vector3.rotate(w, unit.rotation),
     // * the model's own extentShrink: pull every half-extent in about the box
     // centre so the lethal volume sits INSIDE the visible mesh. Per model —
     // the axe is a pure hazard and can afford 0.90, the plank is a bridge you
@@ -284,8 +325,12 @@ function syncDebugBoxes(unit: SwingUnit, t: number) {
     // half-extent, and a MeshRenderer box is 1m across, so scale is 2h —
     // shrunk by the same factor the kill test uses so what you see IS the
     // volume that kills.
-    tr.position = Vector3.clone(b.c)
-    tr.rotation = basisToQuaternion(b.u, b.w)
+    // Mirrored on X, same as toWorld(), so what you see IS what kills.
+    tr.position = Vector3.create(-b.c.x, b.c.y, b.c.z)
+    tr.rotation = basisToQuaternion(
+      Vector3.create(-b.u.x, b.u.y, b.u.z),
+      Vector3.create(-b.w.x, b.w.y, b.w.z)
+    )
     tr.scale = Vector3.create(
       b.h.x * 2 * unit.model.extentShrink,
       b.h.y * 2 * unit.model.extentShrink,
@@ -342,7 +387,24 @@ function refreshArmBounds(unit: SwingUnit) {
   let mxx = -Infinity
   let mxy = -Infinity
   let mxz = -Infinity
-  for (const k of unit.model.keyframes) {
+  // WHICH POSES ARM IT.
+  //
+  // A blade arms off its WHOLE sweep: it is lethal the entire way round, so
+  // anywhere in the arc is a fair place to set it off.
+  //
+  // A plank does not. It only kills coming DOWN (killFromBelowOnly), it travels
+  // 5m in about half a second, and its swept footprint is ~8m long — so arming
+  // off the whole sweep meant walking anywhere near the corridor triggered it,
+  // all four fired together because their sweeps overlap, and the board had
+  // already landed by the time you reached the spot it landed on.
+  //
+  // So a plank arms off its LANDING POSE only: the boxes at landT, which is
+  // where the board actually comes down. That makes each of the four a
+  // separate, local trigger, and puts the trigger where the danger is.
+  const arming = unit.model.killFromBelowOnly
+    ? unit.model.keyframes.filter((k) => Math.abs(k.t - unit.landT) < 1e-6)
+    : unit.model.keyframes
+  for (const k of arming.length > 0 ? arming : unit.model.keyframes) {
     for (const box of k.boxes) {
       const b = toWorld(unit, box)
       const n = Vector3.cross(b.u, b.w)
@@ -367,10 +429,22 @@ function refreshArmBounds(unit: SwingUnit) {
       }
     }
   }
-  // Grown sideways only. Vertical is NOT grown — a player on the floor below
-  // the swing shouldn't set it off.
-  unit.armMin = Vector3.create(mnx - SWING_TRAP_TRIGGER_MARGIN, mny, mnz - SWING_TRAP_TRIGGER_MARGIN)
-  unit.armMax = Vector3.create(mxx + SWING_TRAP_TRIGGER_MARGIN, mxy, mxz + SWING_TRAP_TRIGGER_MARGIN)
+  // HOW MUCH SLACK THE TRIGGER GETS.
+  //
+  // A blade is generous: SWING_TRAP_TRIGGER_MARGIN grows its footprint
+  // sideways, because arming early only means it swings at someone who then
+  // veers off, while arming late means it misses someone already walking in.
+  //
+  // A plank gets NONE. Its trigger is exactly the patch of floor it lands on,
+  // on request — with the margin it armed from over a metre away on every side,
+  // and since the drop takes about half a second the board was already down by
+  // the time you reached the spot. Trigger where it lands, and it lands on you.
+  //
+  // Vertical is never grown either way — a player on the floor below the swing
+  // should not set it off.
+  const margin = unit.model.killFromBelowOnly ? 0 : SWING_TRAP_TRIGGER_MARGIN
+  unit.armMin = Vector3.create(mnx - margin, mny, mnz - margin)
+  unit.armMax = Vector3.create(mxx + margin, mxy, mxz + margin)
 
 }
 
@@ -378,7 +452,11 @@ function refreshArmBounds(unit: SwingUnit) {
 function adopt(name: string, model: SwingTrapModel): boolean {
   const entity = engine.getEntityOrNullByName(name)
   if (entity === null || !Transform.has(entity)) return false
+  return take(entity, name, model)
+}
 
+/** Turn an adopted entity into a live swing unit. */
+function take(entity: Entity, name: string, model: SwingTrapModel): boolean {
   const t = worldTransform(entity)
 
   // A box only survives rotation; a NON-UNIFORM scale shears it into something
@@ -465,6 +543,53 @@ function inSwingLane(pos: Vector3, u: SwingUnit): boolean {
 }
 
 /** Does the moving part touch the player at this point in the clip? */
+/**
+ * Is a floor slab between this box and a player standing at feetY?
+ *
+ * True only when the box is ENTIRELY below a level the player is standing on
+ * or above — the unambiguous case. A box that straddles the level is the blade
+ * coming up through a stairwell opening, which is a real hit and stays lethal.
+ *
+ * The 0.05 margins keep a player standing exactly ON a level, and a box whose
+ * top just grazes it, out of the suppressed case.
+ */
+function floorSeparates(b: WorldBox, feetY: number): boolean {
+  const top = boxHighestY(b)
+  for (const level of FLOOR_LEVELS_Y) {
+    if (feetY >= level - 0.05 && top < level - 0.05) return true
+  }
+  return false
+}
+
+/** Highest world Y the box reaches. Mirror of boxLowestY. */
+function boxHighestY(b: WorldBox): number {
+  const n = Vector3.cross(b.u, b.w)
+  return (
+    b.c.y +
+    Math.abs(b.u.y) * b.h.x +
+    Math.abs(b.w.y) * b.h.y +
+    Math.abs(n.y) * b.h.z
+  )
+}
+
+/**
+ * How low the box hangs DIRECTLY OVER a given point.
+ *
+ * Projects the point into the box's own frame, clamps it to the box's footprint
+ * so it names the nearest part of the board, then returns the lower of that
+ * spot's two faces in world Y. For a tilted plank that is the underside above
+ * your head — not the far tip touching the floor ten metres away, which is what
+ * boxLowestY() reports and why the bridge rule misfired.
+ */
+function boxUndersideNear(b: WorldBox, p: Vector3): number {
+  const n = Vector3.cross(b.u, b.w)
+  const d = Vector3.subtract(p, b.c)
+  const du = Math.max(-b.h.x, Math.min(b.h.x, Vector3.dot(d, b.u)))
+  const dw = Math.max(-b.h.y, Math.min(b.h.y, Vector3.dot(d, b.w)))
+  const baseY = b.c.y + b.u.y * du + b.w.y * dw
+  return baseY - Math.abs(n.y) * b.h.z
+}
+
 function touchesAt(u: SwingUnit, t: number): boolean {
   for (const box of boxesAt(u.model, t)) {
     const b = toWorld(u, box)
@@ -474,7 +599,28 @@ function touchesAt(u: SwingUnit, t: number): boolean {
     // it is still overhead, coming down onto you. Once its underside has
     // settled to around your feet it stops being a hazard and starts being
     // floor, which is exactly when its own collider becomes walkable.
-    if (u.model.killFromBelowOnly && boxLowestY(b) <= playerPosition.y + 0.3) continue
+    // Measured ABOVE THE PLAYER, not across the whole board. fplank is ONE
+    // oriented box covering an 8m plank, so its global lowest corner is the
+    // far end resting on the floor — which made this rule true everywhere and
+    // suppressed almost every hit. Reported from play as "the planks aren't
+    // killing the player": 527 suppressed against 11 kills. What the rule
+    // actually means is "the part over YOU has come down to your feet", so it
+    // has to be sampled at the player's own position.
+    if (u.model.killFromBelowOnly && boxUndersideNear(b, playerPosition) <= playerPosition.y + 0.3) continue
+
+    // THE FLOOR RULE. A blade's arc is 6.5m tall and the storeys here are
+    // ~5m apart, so part of every swing is on the OTHER SIDE of a floor slab
+    // from the player. The kill test is pure geometry — it has no idea a floor
+    // is in the way — so without this you get killed on the upper floor by a
+    // blade swinging in the room beneath you. Measured before adding it: of
+    // the kills on floor 8.58, 20 of 21 came from a box entirely below that
+    // floor. On the ground floor, zero. Reported from play as "phantom kills"
+    // and it is exactly that: the hit box is right, it is just downstairs.
+    //
+    // Cheap and exact: if a whole floor level sits between the box and the
+    // player's feet, the box cannot reach them. No raycast, same reasoning
+    // (and same FLOOR_LEVELS_Y) that the blood stains use.
+    if (floorSeparates(b, playerPosition.y)) continue
 
     if (orientedBoxHitsPlayer(b.c, b.u, b.w, b.h, SWING_TRAP_TOUCH_MARGIN)) return true
   }
@@ -516,6 +662,131 @@ function touching(u: SwingUnit, dt: number): boolean {
   return false
 }
 
+/** Planks whoosh, axes get the heavier blade whoosh. */
+function swingSoundFor(u: SwingUnit): string {
+  return u.model.killFromBelowOnly ? SOUND_SWING : SOUND_AXE_SWING
+}
+
+/** Axes carry further than planks — see SWING_TRAP_AXE_VOLUME. */
+function swingVolumeFor(u: SwingUnit): number {
+  return u.model.killFromBelowOnly ? SWING_TRAP_SWING_VOLUME : SWING_TRAP_AXE_VOLUME
+}
+
+/**
+ * DUST BURST — a puff of floor thrown up where the plank slams down.
+ *
+ * Spread ALONG the fallen board, not stacked in one place: the whole 8m length
+ * lands together, so a single puff at the centre reads as a smoke bomb rather
+ * than an impact. Each puff snaps open, drifts up and fades inside
+ * PLANK_DUST_SECONDS.
+ *
+ * Billboarded, unlit-ish and non-colliding — this is decoration on top of a
+ * trap that has already decided whether it killed you.
+ */
+const dustPuffs: { e: Entity; life: number; rise: number; spin: number }[] = []
+
+function spawnPlankDust(u: SwingUnit): void {
+  // THE BOARD'S REAL FOOTPRINT, from the CORNERS of its landing box.
+  //
+  // The first version walked box CENTRES — and fplank is a single oriented box
+  // covering the whole 8m plank, so every puff collapsed onto that one centre
+  // point. Reported from play as the dust "popping at the back": one clump,
+  // nowhere near the end that actually slams down.
+  //
+  // Corners give the true extent, and the puffs are then laid along whichever
+  // horizontal axis is longer — which for a plank is always its length.
+  let mnx = Infinity
+  let mnz = Infinity
+  let mxx = -Infinity
+  let mxz = -Infinity
+  let floorY = Infinity
+  for (const box of boxesAt(u.model, u.landT)) {
+    const b = toWorld(u, box)
+    const n = Vector3.cross(b.u, b.w)
+    for (const su of [-1, 1]) {
+      for (const sw of [-1, 1]) {
+        for (const sn of [-1, 1]) {
+          const p = Vector3.add(
+            b.c,
+            Vector3.add(
+              Vector3.scale(b.u, su * b.h.x),
+              Vector3.add(Vector3.scale(b.w, sw * b.h.y), Vector3.scale(n, sn * b.h.z))
+            )
+          )
+          mnx = Math.min(mnx, p.x)
+          mnz = Math.min(mnz, p.z)
+          mxx = Math.max(mxx, p.x)
+          mxz = Math.max(mxz, p.z)
+          floorY = Math.min(floorY, p.y)
+        }
+      }
+    }
+  }
+  if (!isFinite(floorY)) return
+
+  // Lay the puffs along the LONG horizontal axis; across the short one they
+  // would sit on top of each other again.
+  const spanX = mxx - mnx
+  const spanZ = mxz - mnz
+  const alongX = spanX >= spanZ
+  const midX = (mnx + mxx) / 2
+  const midZ = (mnz + mxz) / 2
+
+  for (let i = 0; i < PLANK_DUST_PUFFS; i++) {
+    const t = PLANK_DUST_PUFFS > 1 ? i / (PLANK_DUST_PUFFS - 1) : 0.5
+    // A little scatter so the row does not read as a dotted line.
+    const jx = (Math.random() - 0.5) * 0.6
+    const jz = (Math.random() - 0.5) * 0.6
+    const x = alongX ? mnx + spanX * t + jx : midX + jx
+    const z = alongX ? midZ + jz : mnz + spanZ * t + jz
+    const e = engine.addEntity()
+    Transform.create(e, {
+      position: Vector3.create(x, floorY + 0.25, z),
+      scale: Vector3.create(0.25, 0.25, 0.25)
+    })
+    Billboard.create(e, { billboardMode: BillboardMode.BM_Y })
+    MeshRenderer.setPlane(e)
+    Material.setPbrMaterial(e, {
+      texture: Material.Texture.Common({ src: PLANK_DUST_TEXTURE }),
+      transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
+      albedoColor: Color4.create(1, 0.97, 0.92, 0.85),
+      specularIntensity: 0,
+      metallic: 0,
+      roughness: 1
+    })
+    dustPuffs.push({
+      e,
+      life: PLANK_DUST_SECONDS * (0.75 + Math.random() * 0.5),
+      rise: PLANK_DUST_RISE * (0.6 + Math.random() * 0.8),
+      spin: (Math.random() - 0.5) * 90
+    })
+  }
+}
+
+/** Grows, lifts and fades each puff, then clears it. */
+function dustSystem(dt: number): void {
+  for (let i = dustPuffs.length - 1; i >= 0; i--) {
+    const d = dustPuffs[i]
+    d.life -= dt
+    if (d.life <= 0) {
+      engine.removeEntity(d.e)
+      dustPuffs.splice(i, 1)
+      continue
+    }
+    const total = PLANK_DUST_SECONDS
+    const t = Math.max(0, Math.min(1, 1 - d.life / total))
+    const tr = Transform.getMutable(d.e)
+    // Snaps out, then keeps swelling gently as it thins — how a real puff goes.
+    const spread = PLANK_DUST_SIZE * (0.25 + 0.75 * Math.min(1, t * 3.2)) * (1 + t * 0.5)
+    tr.scale = Vector3.create(spread, spread, spread)
+    tr.position = Vector3.create(tr.position.x, tr.position.y + d.rise * dt, tr.position.z)
+    const mat = Material.getMutableOrNull(d.e)
+    if (mat !== null && mat.material?.$case === 'pbr') {
+      mat.material.pbr.albedoColor = Color4.create(1, 0.97, 0.92, 0.85 * (1 - t))
+    }
+  }
+}
+
 function swingSystem(dt: number) {
   if (pending.length > 0) {
     for (let i = pending.length - 1; i >= 0; i--) {
@@ -541,7 +812,25 @@ function swingSystem(dt: number) {
         if (isInvulnerable()) break
         // Predicted OR current position — someone who stops dead inside the
         // lane should still get hit, not just someone walking through it.
-        if (inSwingLane(playerPosition, u) || inSwingLane(predicted, u)) {
+        // A PLANK ARMS ON WHERE YOU ARE, A BLADE ON WHERE YOU WILL BE.
+        //
+        // The four planks sit ~1.5m apart with trigger boxes barely 0.55m deep,
+        // so an 0.8s lookahead reaches clean over one board and into the next —
+        // walking the corridor armed all four in a row and they read as one
+        // event. Current position only makes each board its own local trigger.
+        //
+        // Blades keep the prediction: their arc is metres wide and lethal all
+        // the way round, so arming late means missing someone already inside it.
+        const armed = u.model.killFromBelowOnly
+          ? inSwingLane(playerPosition, u)
+          : inSwingLane(playerPosition, u) || inSwingLane(predicted, u)
+        if (armed && u.model.killFromBelowOnly && SWING_TRAP_PLANK_TRIGGER_DELAY > 0) {
+          // Wait, then drop. Gives the player a beat to get off the patch.
+          u.state = 'armed'
+          u.timer = SWING_TRAP_PLANK_TRIGGER_DELAY
+          break
+        }
+        if (armed) {
           u.state = 'swinging'
           u.elapsed = 0
           u.landed = false
@@ -555,14 +844,35 @@ function swingSystem(dt: number) {
             for (const st of anim.states) {
               st.playing = u.model.clips.indexOf(st.clip) >= 0
               st.shouldReset = true
-              st.speed = 1
+              st.speed = u.model.playbackSpeed
               // NOT looping. A looping clip restarts on its own, which for the
               // plank means it flies back up under whoever is standing on it.
               st.loop = false
             }
           }
-          playSoundAt(SOUND_SWING, u.origin, SWING_TRAP_SWING_VOLUME)
+          playSoundAt(swingSoundFor(u), u.origin, swingVolumeFor(u))
         }
+        break
+      }
+
+      case 'armed': {
+        u.timer -= dt
+        if (u.timer > 0) break
+        u.state = 'swinging'
+        u.elapsed = 0
+        u.landed = false
+        u.holdTimer = 0
+        u.bounceTimer = 0
+        const anim = Animator.getMutableOrNull(u.entity)
+        if (anim !== null) {
+          for (const st of anim.states) {
+            st.playing = u.model.clips.indexOf(st.clip) >= 0
+            st.shouldReset = true
+            st.speed = u.model.playbackSpeed
+            st.loop = false
+          }
+        }
+        playSoundAt(swingSoundFor(u), u.origin, swingVolumeFor(u))
         break
       }
 
@@ -585,7 +895,7 @@ function swingSystem(dt: number) {
             if (anim !== null) {
               for (const st of anim.states) {
                 if (u.model.clips.indexOf(st.clip) < 0) continue
-                st.speed = 1
+                st.speed = u.model.playbackSpeed
                 st.shouldReset = false // resume, do NOT restart from the top
                 st.loop = false
               }
@@ -595,7 +905,9 @@ function swingSystem(dt: number) {
         }
 
         const wasBefore = u.elapsed
-        u.elapsed += dt
+        // Scaled by the same playbackSpeed given to the Animator, so the hit
+        // boxes advance through the clip at exactly the rate the mesh does.
+        u.elapsed += dt * u.model.playbackSpeed
 
         if (!isInvulnerable() && touching(u, dt)) {
           killPlayer(u.model.deathCause)
@@ -606,6 +918,7 @@ function swingSystem(dt: number) {
           u.landed = true
           u.elapsed = u.landT
           playSoundAt(SOUND_WOOD_IMPACT, lowPointOf(u), SWING_TRAP_PLANK_IMPACT_VOLUME)
+          spawnPlankDust(u)
           u.bounceTimer = SWING_TRAP_PLANK_BOUNCE_DELAY
           u.holdTimer = SWING_TRAP_PLANK_HOLD_SECONDS
           const anim = Animator.getMutableOrNull(u.entity)
@@ -642,6 +955,9 @@ function swingSystem(dt: number) {
 }
 
 export function initSwingTraps() {
+  // Planks AND blades are adopted from Creator Hub, so every unit goes on the
+  // pending list and is retried until the scene has produced it.
   for (const u of SWING_TRAP_UNITS) pending.push(u.name)
   addSafeSystem(swingSystem, 'swingSystem')
+  addSafeSystem(dustSystem, 'dustSystem')
 }

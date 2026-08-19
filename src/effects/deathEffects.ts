@@ -38,18 +38,27 @@ import {
   Material,
   MaterialTransparencyMode,
   GltfContainer,
+  Billboard,
+  BillboardMode,
   AvatarModifierArea,
   AvatarModifierType,
   Schemas,
   Entity
 } from '@dcl/sdk/ecs'
-import { Vector3, Quaternion } from '@dcl/sdk/math'
+import { Vector3, Quaternion, Color4 } from '@dcl/sdk/math'
 import { syncEntity } from '@dcl/sdk/network'
 import { getPlayer } from '@dcl/sdk/players'
 import {
   DEATH_SHAKE_SECONDS,
   DEATH_SHAKE_AMPLITUDE,
   BLOOD_POOL_TEXTURE,
+  ELECTROCUTION_TEXTURE,
+  ELECTROCUTION_SECONDS,
+  ELECTROCUTION_BURST_SIZE,
+  ELECTROCUTION_CAUSE,
+  MODEL_SKELETON,
+  SKELETON_SCALE,
+  BLOOD_POOL_TEXTURES,
   BLOOD_MAX_STAINS,
   TOMBSTONE_MODELS,
   TOMBSTONE_LIFETIME_SECONDS,
@@ -190,7 +199,12 @@ function refreshTombstoneHover(entity: Entity, name: string, cause: string, died
     Transform.create(hitbox, { position: Vector3.create(0, 0.9, 0), scale: Vector3.create(1, 1.8, 1), parent: entity })
     MeshCollider.setBox(hitbox, ColliderLayer.CL_POINTER)
     pointerEventsSystem.onPointerDown(
-      { entity: hitbox, opts: { button: InputAction.IA_ANY, hoverText: text, maxDistance: 8 } },
+      // IA_POINTER, not IA_ANY: the hover UI prints the action's name in front
+      // of the text, and IA_ANY prints the literal word "Any" — so the grave
+      // read "Any <name> died here". IA_POINTER shows the ordinary click glyph
+      // and matches the candle and portal prompts. Nothing happens on click
+      // either way; this is a label, not an interaction.
+      { entity: hitbox, opts: { button: InputAction.IA_POINTER, hoverText: text, maxDistance: 8 } },
       () => {} // hover info only — nothing happens on click
     )
     tombstoneHitboxes.set(entity, hitbox)
@@ -372,6 +386,86 @@ function floorBeneath(pos: Vector3): number {
   return YARD_FLOOR_Y
 }
 
+/** Cycles the splat designs so consecutive deaths never leave the same mark. */
+let bloodDesign = 0
+
+
+/**
+ * THE ELECTROCUTION FLASH — a burst with a skeleton lit up inside it.
+ *
+ * Two pieces, both billboarded so they face you however the camera was turned
+ * at the moment of death:
+ *   - the star burst, scaled up from nothing and faded out;
+ *   - the skeleton model standing where you were, which is the joke — the
+ *     lightning X-rays you.
+ *
+ * Local and unsynced, like the bloodstains: this is YOUR death, and a yard full
+ * of other people's flashes would read as weather rather than as a mistake you
+ * made.
+ */
+const electros: { burst: Entity; bones: Entity; life: number }[] = []
+
+function spawnElectrocution(pos: Vector3) {
+  const groundY = floorBeneath(pos)
+
+  const burst = engine.addEntity()
+  Transform.create(burst, {
+    position: Vector3.create(pos.x, groundY + 1.15, pos.z),
+    scale: Vector3.create(0.2, 0.2, 0.2)
+  })
+  Billboard.create(burst, { billboardMode: BillboardMode.BM_Y })
+  MeshRenderer.setPlane(burst)
+  Material.setPbrMaterial(burst, {
+    texture: Material.Texture.Common({ src: ELECTROCUTION_TEXTURE }),
+    emissiveTexture: Material.Texture.Common({ src: ELECTROCUTION_TEXTURE }),
+    // Emissive so it reads as a light source in a scene this dark, rather than
+    // a sticker lit by whatever happens to be nearby.
+    emissiveColor: Color4.create(0.55, 0.78, 1, 1),
+    emissiveIntensity: 2.4,
+    transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
+    specularIntensity: 0,
+    metallic: 0,
+    roughness: 1
+  })
+
+  // The bones, standing in the burst. Slightly in front of the plane so the
+  // billboard cannot z-fight with it.
+  const bones = engine.addEntity()
+  Transform.create(bones, {
+    position: Vector3.create(pos.x, groundY, pos.z),
+    scale: Vector3.create(SKELETON_SCALE, SKELETON_SCALE, SKELETON_SCALE)
+  })
+  Billboard.create(bones, { billboardMode: BillboardMode.BM_Y })
+  GltfContainer.create(bones, {
+    src: MODEL_SKELETON,
+    // Never solid: this is a 0.9s visual on top of a corpse, and an invisible
+    // collider left in the yard would be a wall nobody can see.
+    visibleMeshesCollisionMask: ColliderLayer.CL_NONE,
+    invisibleMeshesCollisionMask: ColliderLayer.CL_NONE
+  })
+
+  electros.push({ burst, bones, life: ELECTROCUTION_SECONDS })
+}
+
+/** Grows the burst and clears both pieces when the flash is spent. */
+function electrocutionSystem(dt: number) {
+  for (let i = electros.length - 1; i >= 0; i--) {
+    const e = electros[i]
+    e.life -= dt
+    if (e.life <= 0) {
+      engine.removeEntity(e.burst)
+      engine.removeEntity(e.bones)
+      electros.splice(i, 1)
+      continue
+    }
+    // Snaps open, then eases away — an electrical flash has no wind-up.
+    const t = 1 - e.life / ELECTROCUTION_SECONDS
+    const spread = ELECTROCUTION_BURST_SIZE * Math.min(1, t * 4.5)
+    const tr = Transform.getMutable(e.burst)
+    tr.scale = Vector3.create(spread, spread, spread)
+  }
+}
+
 export function spawnBloodStain(pos: Vector3) {
   const stain = engine.addEntity()
   const yaw = Math.random() * 360
@@ -384,9 +478,10 @@ export function spawnBloodStain(pos: Vector3) {
     rotation: Quaternion.multiply(Quaternion.fromEulerDegrees(0, yaw, 0), Quaternion.fromEulerDegrees(90, 0, 0)),
     scale: Vector3.create(size, size, 1)
   })
+  bloodDesign = (bloodDesign + 1) % BLOOD_POOL_TEXTURES.length
   MeshRenderer.setPlane(stain)
   Material.setPbrMaterial(stain, {
-    texture: Material.Texture.Common({ src: BLOOD_POOL_TEXTURE }),
+    texture: Material.Texture.Common({ src: BLOOD_POOL_TEXTURES[bloodDesign] }),
     transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
     specularIntensity: 0,
     metallic: 0,
@@ -628,6 +723,13 @@ export function initDeathEffects() {
     // its own try/catch + reportFailure label so a device that hits this
     // shows exactly which one, in the debug HUD's FAILED row, instead of the
     // other two effects silently never happening too.
+    if (cause === ELECTROCUTION_CAUSE) {
+      try {
+        spawnElectrocution(playerPosition)
+      } catch (err) {
+        reportFailure('death:electrocution', err instanceof Error ? err.message : String(err))
+      }
+    }
     try {
       spawnBloodStain(playerPosition)
     } catch (err) {
@@ -647,4 +749,5 @@ export function initDeathEffects() {
 
   addSafeSystem(shakeSystem, 'shakeSystem')
   addSafeSystem(tombstoneSystem, 'tombstoneSystem')
+  addSafeSystem(electrocutionSystem, 'electrocutionSystem')
 }

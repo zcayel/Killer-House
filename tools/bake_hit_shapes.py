@@ -194,6 +194,18 @@ def main():
                     help='max width of a cross-section cell, metres (default 1.0)')
     ap.add_argument('--samples', type=int, default=4000, help='surface samples per pose')
     ap.add_argument('--out', default=None, help='write the keyframes here instead of stdout')
+    # BAKE FROM THE AUTHORED COLLISION SHAPE instead of the render mesh.
+    #
+    # Default is the render mesh, because for most props that IS the thing the
+    # player sees and expects to be hit by. But a model can ship a *_collider
+    # node that says, deliberately, "this is my hit volume" — blade.glb does —
+    # and then baking the render mesh ignores the artist's intent.
+    #
+    # Check the hierarchy first: a collider that is a separate ROOT node is not
+    # driven by the clip and will bake to a static shape. It has to be a child
+    # of the animated node (or animated itself) to be worth baking.
+    ap.add_argument('--from-collider', action='store_true',
+                    help='bake the *_collider mesh rather than the visible mesh')
     args = ap.parse_args()
 
     path = args.model if os.path.isabs(args.model) else os.path.join(G.ROOT, args.model)
@@ -201,8 +213,12 @@ def main():
         sys.exit('no such model: %s' % path)
 
     G.SURF_TARGET = args.samples
-    sample = G.make_surface_sampler(path, args.clip)
-    vsample = G.make_sampler(path, args.clip)
+    part = 'collider' if args.from_collider else 'visible'
+    sample = G.make_surface_sampler(path, args.clip, part)
+    vsample = G.make_sampler(path, args.clip, part)
+    if not sample(0.0):
+        sys.exit('no %s geometry found in %s — check the node names'
+                 % (part, args.model))
     DUR = args.duration
     pivot = G.find_pivot(vsample, DUR)
     probes = [DUR * k / 60 for k in range(61)]

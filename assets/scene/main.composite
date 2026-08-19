@@ -142,6 +142,27 @@
             "parent": 0
           }
         },
+        "517": {
+          "json": {
+            "position": {
+              "x": 20.36851692199707,
+              "y": 8.25,
+              "z": 13.499305725097656
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0,
+              "w": 1
+            },
+            "parent": 0
+          }
+        },
         "519": {
           "json": {
             "position": {
@@ -1028,19 +1049,19 @@
           "json": {
             "position": {
               "x": 27.75,
-              "y": 2.763461112976074,
+              "y": 2.6541202068328857,
               "z": 15.5
-            },
-            "scale": {
-              "x": 1,
-              "y": 1,
-              "z": 1
             },
             "rotation": {
               "x": 0,
               "y": 0.7071067690849304,
               "z": 0,
               "w": 0.7071067690849304
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
             },
             "parent": 0
           }
@@ -1444,17 +1465,12 @@
             "parent": 0
           }
         },
-        "609": {
+        "131588": {
           "json": {
             "position": {
-              "x": 23.0870304107666,
-              "y": 11.75,
-              "z": 16.5
-            },
-            "scale": {
-              "x": 1,
-              "y": 1,
-              "z": 1
+              "x": 20.36851692199707,
+              "y": 8.25,
+              "z": 10.934639930725098
             },
             "rotation": {
               "x": 0,
@@ -1462,26 +1478,10 @@
               "z": 0,
               "w": 1
             },
-            "parent": 0
-          }
-        },
-        "66052": {
-          "json": {
-            "position": {
-              "x": 15.75,
-              "y": 11.75,
-              "z": 8
-            },
             "scale": {
               "x": 1,
               "y": 1,
               "z": 1
-            },
-            "rotation": {
-              "x": 0,
-              "y": 1,
-              "z": 0,
-              "w": 6.123234262925839e-17
             },
             "parent": 0
           }
@@ -1608,6 +1608,20 @@
             ]
           }
         },
+        "517": {
+          "json": {
+            "states": [
+              {
+                "clip": "pbaldeAction",
+                "playing": false,
+                "weight": -1,
+                "speed": 1,
+                "loop": false,
+                "shouldReset": false
+              }
+            ]
+          }
+        },
         "596": {
           "json": {
             "states": [
@@ -1696,29 +1710,15 @@
             ]
           }
         },
-        "609": {
+        "131588": {
           "json": {
             "states": [
               {
                 "clip": "pbaldeAction",
-                "playing": true,
+                "playing": false,
                 "weight": -1,
                 "speed": 1,
-                "loop": true,
-                "shouldReset": false
-              }
-            ]
-          }
-        },
-        "66052": {
-          "json": {
-            "states": [
-              {
-                "clip": "pbaldeAction",
-                "playing": true,
-                "weight": -1,
-                "speed": 1,
-                "loop": true,
+                "loop": false,
                 "shouldReset": false
               }
             ]
@@ -1759,6 +1759,13 @@
         "515": {
           "json": {
             "src": "assets/asset-packs/old_wooden_door/door_pirates.glb",
+            "visibleMeshesCollisionMask": 0,
+            "invisibleMeshesCollisionMask": 3
+          }
+        },
+        "517": {
+          "json": {
+            "src": "assets/Models/blade/blade.glb",
             "visibleMeshesCollisionMask": 0,
             "invisibleMeshesCollisionMask": 3
           }
@@ -2169,16 +2176,9 @@
             "invisibleMeshesCollisionMask": 0
           }
         },
-        "609": {
+        "131588": {
           "json": {
-            "src": "assets/Models/pblade2/pblade2.glb",
-            "visibleMeshesCollisionMask": 0,
-            "invisibleMeshesCollisionMask": 3
-          }
-        },
-        "66052": {
-          "json": {
-            "src": "assets/Models/pblade2/pblade2.glb",
+            "src": "assets/Models/blade/blade.glb",
             "visibleMeshesCollisionMask": 0,
             "invisibleMeshesCollisionMask": 3
           }
@@ -2216,6 +2216,11 @@
         "515": {
           "json": {
             "value": "Old Wooden Door_2"
+          }
+        },
+        "517": {
+          "json": {
+            "value": "blade.glb_2"
           }
         },
         "519": {
@@ -2528,14 +2533,9 @@
             "value": "Ambient Sound - Market"
           }
         },
-        "609": {
+        "131588": {
           "json": {
-            "value": "pblade2.glb"
-          }
-        },
-        "66052": {
-          "json": {
-            "value": "pblade2.glb_2"
+            "value": "blade.glb"
           }
         }
       }
@@ -2745,7 +2745,7 @@
         "serializationType": "map"
       },
       "data": {
-        "66052": {
+        "585": {
           "json": {
             "gizmo": 1
           }
@@ -2831,8 +2831,8 @@
                   597,
                   598,
                   604,
-                  609,
-                  66052
+                  131588,
+                  517
                 ]
               },
               {
@@ -3153,11 +3153,11 @@
                 "children": []
               },
               {
-                "entity": 609,
+                "entity": 131588,
                 "children": []
               },
               {
-                "entity": 66052,
+                "entity": 517,
                 "children": []
               }
             ]
@@ -3192,6 +3192,9 @@
           "json": {}
         },
         "515": {
+          "json": {}
+        },
+        "517": {
           "json": {}
         },
         "518": {
@@ -3419,9 +3422,6 @@
         "599": {
           "json": {}
         },
-        "600": {
-          "json": {}
-        },
         "601": {
           "json": {}
         },
@@ -3446,10 +3446,7 @@
         "608": {
           "json": {}
         },
-        "609": {
-          "json": {}
-        },
-        "66052": {
+        "131588": {
           "json": {}
         }
       }
