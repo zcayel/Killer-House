@@ -68,6 +68,8 @@ import {
   HOUSE_RECT,
   LIGHTNING_STRIKE_ENABLED,
   LIGHTNING_KILL_RADIUS,
+  LIGHTNING_SPAWN_SAFE_RADIUS,
+  SPAWN_POSITION,
   LIGHTNING_HOUSE_MARGIN,
   LIGHTNING_FLIPBOOK,
   LIGHTNING_FLIPBOOK_GRID,
@@ -214,6 +216,8 @@ function pickStrikePoint(taken: Vector3[]): Vector3 {
       z > HOUSE_RECT.minZ - LIGHTNING_HOUSE_MARGIN &&
       z < HOUSE_RECT.maxZ + LIGHTNING_HOUSE_MARGIN
     if (insideHouse) continue
+    // The spawn is sanctuary — see LIGHTNING_SPAWN_SAFE_RADIUS.
+    if (nearSpawn(x, z)) continue
 
     let tooClose = false
     for (const t of taken) {
@@ -225,6 +229,26 @@ function pickStrikePoint(taken: Vector3[]): Vector3 {
     if (!tooClose) return Vector3.create(x, 0, z)
   }
   return Vector3.create(YARD_BOUNDS.minX + 1, 0, YARD_BOUNDS.maxZ - 1)
+}
+
+/**
+ * Distance from the spawn point, flat. The spawn's own y is 0.1 and nothing
+ * about this rule cares about height — a player on the roof above the spawn is
+ * not what it is protecting.
+ */
+function fromSpawn(x: number, z: number): number {
+  return Math.hypot(x - SPAWN_POSITION.x, z - SPAWN_POSITION.z)
+}
+
+/**
+ * Is this point close enough to the spawn that a bolt there could reach into
+ * the sanctuary? Used for CHOOSING points, not for the kill test.
+ *
+ * SAFE plus the kill radius, so a point that passes this cannot have any part
+ * of its lethal ring inside the sanctuary. See LIGHTNING_SPAWN_SAFE_RADIUS.
+ */
+function nearSpawn(x: number, z: number): boolean {
+  return fromSpawn(x, z) < LIGHTNING_SPAWN_SAFE_RADIUS + LIGHTNING_KILL_RADIUS
 }
 
 /** True while the player is under the roof, which is absolute shelter. */
@@ -254,6 +278,11 @@ function insideHouse(x: number, z: number, margin: number): boolean {
 function huntStrikePoint(): Vector3 | null {
   const p = playerPosition
   if (insideHouse(p.x, p.z, 0)) return null
+  // STANDING IN THE SANCTUARY IS NOT A TARGET. Returning null rather than
+  // aiming short of it, exactly like the roof case above: the caller falls back
+  // to a random point elsewhere in the yard, so the storm carries on around a
+  // player it simply will not hunt.
+  if (fromSpawn(p.x, p.z) < LIGHTNING_SPAWN_SAFE_RADIUS) return null
 
   const lead = predictPlayerPosition(THUNDER_AT)
   let dx = lead.x - p.x
@@ -285,6 +314,35 @@ function huntStrikePoint(): Vector3 | null {
       return null
     }
   }
+
+  // A LEAD THAT LANDS BESIDE THE SPAWN, pushed straight out from it.
+  //
+  // This is the case the whole rule exists for. The player is outside the
+  // sanctuary (checked above) but running toward it, so the lead lands short of
+  // the line — and the clamp into YARD_BOUNDS, whose minZ is 1.8 against a
+  // spawn at z 1, is what used to park it right on their doorstep.
+  //
+  // Pushed radially rather than nudged to an axis: the sanctuary is a circle,
+  // so out-from-the-centre is the shortest legal direction by construction, and
+  // it cannot land back inside the way an axis push can at a corner.
+  if (nearSpawn(x, z)) {
+    const d = fromSpawn(x, z)
+    const reach = LIGHTNING_SPAWN_SAFE_RADIUS + LIGHTNING_KILL_RADIUS
+    // Dead on the spawn point is the one direction the maths cannot pick, so
+    // it gets an arbitrary one. It is a degenerate case, not an impossible one:
+    // predictPlayerPosition can land exactly on it.
+    const ux = d > 0.001 ? (x - SPAWN_POSITION.x) / d : 1
+    const uz = d > 0.001 ? (z - SPAWN_POSITION.z) / d : 0
+    x = SPAWN_POSITION.x + ux * reach
+    z = SPAWN_POSITION.z + uz * reach
+    // Pushed out of the yard, or back under the roof. Give up and let the
+    // caller pick at random rather than clamping it back into the sanctuary,
+    // which is what a bare clamp here would quietly do.
+    if (x < YARD_BOUNDS.minX || x > YARD_BOUNDS.maxX || z < YARD_BOUNDS.minZ || z > YARD_BOUNDS.maxZ) {
+      return null
+    }
+    if (insideHouse(x, z, LIGHTNING_HOUSE_MARGIN)) return null
+  }
   return Vector3.create(x, 0, z)
 }
 
@@ -304,6 +362,12 @@ function playerInStrike(): boolean {
   const shelteredByHouse =
     p.x > HOUSE_RECT.minX && p.x < HOUSE_RECT.maxX && p.z > HOUSE_RECT.minZ && p.z < HOUSE_RECT.maxZ
   if (shelteredByHouse) return false
+  // THE SECOND OF THE TWO SPAWN RULES, and deliberately independent of the
+  // first: point selection already keeps every ring clear of the sanctuary, so
+  // this should never be the thing that saves anyone. It is here so that a
+  // future change to how points are picked cannot quietly make the spawn
+  // lethal again without anybody noticing.
+  if (fromSpawn(p.x, p.z) < LIGHTNING_SPAWN_SAFE_RADIUS) return false
   for (const s of strikePoints) {
     if (Math.hypot(p.x - s.x, p.z - s.z) < LIGHTNING_KILL_RADIUS) return true
   }
