@@ -107,6 +107,8 @@ import { volumeCylinder, endVolumes, VOLUME_COLOURS } from '../debug/killVolumes
 import { playerPosition } from '../playerTracker'
 import { playSoundAt, SOUND_SKELETON_ATTACK, SOUND_BONE_RATTLE, gain } from '../sounds'
 import { isMobileNow } from '../platform'
+import { registerReplayExtra, replayIsPlaying } from '../effects/replayStage'
+import { victoryCinematicActive } from '../effects/victoryCinematic'
 
 /**
  * hunting — a target is known and reachable; walk at it.
@@ -477,6 +479,27 @@ function ensureAnim(s: Skeleton, clip: string, dt: number) {
   Animator.playSingleAnimation(s.root, clip)
 }
 
+/**
+ * Put a skeleton into a clip because the DEATH REPLAY says so, not the AI.
+ *
+ * It writes s.anim and clears the refresh/lock as well as issuing the clip, and
+ * that bookkeeping is the point: the AI is stood down for the length of the
+ * recap and would otherwise come back believing it is still playing whatever it
+ * last chose. ensureAnim skips a clip it thinks is already running, so the model
+ * would keep showing the recap's animation for up to ANIM_REFRESH_SECONDS while
+ * the skeleton walked around underneath it.
+ *
+ * Mobile never touches the Animator after create (see ensureAnim) and this is
+ * not going to be the one place that does.
+ */
+function replayAnim(s: Skeleton, clip: string) {
+  if (isMobileNow()) return
+  s.anim = clip
+  s.animRefresh = 0
+  s.animLock = 0
+  Animator.playSingleAnimation(s.root, clip)
+}
+
 /** A one-shot clip that holds priority for `lock` seconds. */
 function playOneShot(s: Skeleton, clip: string, lock: number) {
   if (isMobileNow()) return
@@ -683,6 +706,32 @@ export function nearestSkeletonDistance(): number {
 // ──────────────────────────────── the system ─────────────────────────────────
 
 function skeletonSystem(dt: number) {
+  // HANDS OFF WHILE A DEATH REPLAY IS RUNNING.
+  //
+  // A skeleton is a replay EXTRA (see replayStage.ts): its Transform is written
+  // by this scene every frame, so the recap can play its recorded poses back
+  // exactly rather than reconstructing them. That only works if the AI stops
+  // writing to the same Transform — this system is registered after the
+  // replay's and would win the frame otherwise, and the skeleton in shot would
+  // be hunting a player who is already dead instead of chasing the ghost the
+  // way it actually did.
+  if (replayIsPlaying()) {
+    endVolumes('skeleton', 0) // nothing live to draw while they are puppets
+    return
+  }
+
+  // STAND DOWN FOR THE VICTORY SHOT, for a different reason than the replay's.
+  // Nothing here can hurt the player any more (they are invulnerable from the
+  // moment the portal opens), but they have just been teleported to the front
+  // yard — skeleton country — and a hunter converging on the pile walks
+  // straight through the middle of the one composed frame in this scene.
+  // Freezing where they stand leaves them a good eighteen metres back near the
+  // portal they were last chasing toward, well outside the shot.
+  if (victoryCinematicActive) {
+    endVolumes('skeleton', 0)
+    return
+  }
+
   let drawnSkeletons = 0
   for (const s of skeletons) {
     if (!s.active) continue
@@ -957,6 +1006,15 @@ export function initSkeletons() {
       active: true
     }
     skeletons.push(s)
+    // The death replay records this root's pose alongside the player's and
+    // plays it straight back, so a skeleton kill shows the skeleton reaching
+    // you rather than the ghost falling over on its own. The clip goes with the
+    // pose — a recorded sprint played back in the idle stance is a skeleton
+    // gliding across the yard.
+    registerReplayExtra(root, {
+      read: () => s.anim,
+      apply: (clip: string) => replayAnim(s, clip)
+    })
 
     // The click/tap "Stab — butcher knife" prompt was REMOVED on 2026-08-19
     // on request. It was the last way to damage a skeleton, so stab(),

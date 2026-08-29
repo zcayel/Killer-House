@@ -77,6 +77,7 @@ import { playerPosition, predictPlayerPosition } from '../playerTracker'
 import { killPlayer, isInvulnerable } from '../gameState'
 import { orientedBoxHitsPlayer } from '../hits'
 import { addSafeSystem } from '../safeSystem'
+import { registerReplayActor, recordHazardEvent } from '../effects/replayStage'
 
 type SwingState = 'idle' | 'armed' | 'swinging' | 'cooldown'
 
@@ -90,6 +91,8 @@ interface WorldBox {
 
 interface SwingUnit {
   entity: Entity
+  /** The Creator Hub name it was adopted under; also its death-replay cue key. */
+  name: string
   model: SwingTrapModel
   /** Composed world transform — the keyframe boxes are relative to it. */
   origin: Vector3
@@ -477,6 +480,7 @@ function take(entity: Entity, name: string, model: SwingTrapModel): boolean {
 
   const unit: SwingUnit = {
     entity,
+    name,
     model,
     origin: t.position,
     rotation: t.rotation,
@@ -523,6 +527,14 @@ function take(entity: Entity, name: string, model: SwingTrapModel): boolean {
   }
 
   refreshArmBounds(unit)
+
+  // The death replay's handle on this unit. Registered per adopted unit rather
+  // than per model, because the four planks sit metres apart and the recap has
+  // to swing the one that actually came down on you.
+  registerReplayActor(replayKey(name), {
+    reset: () => restSwing(unit),
+    fire: () => startSwing(unit)
+  })
 
   units.push(unit)
   return true
@@ -670,6 +682,63 @@ function swingSoundFor(u: SwingUnit): string {
 /** Axes carry further than planks — see SWING_TRAP_AXE_VOLUME. */
 function swingVolumeFor(u: SwingUnit): number {
   return u.model.killFromBelowOnly ? SWING_TRAP_SWING_VOLUME : SWING_TRAP_AXE_VOLUME
+}
+
+/**
+ * SWING. The one place a swing ever starts, so the death replay can start one
+ * the same way the player does — the whole point of the recap is that the axe
+ * in it is the axe that killed you, and two near-identical copies of this block
+ * (which is what the idle and armed cases used to hold) is how a replay quietly
+ * drifts out of step with the real thing.
+ *
+ * Fires every clip rather than calling playSingleAnimation: that stops the
+ * others, and fplank's collider rides a SEPARATE clip from its visible board.
+ * speed is restored here too — a previous hold left it at 0. NOT looping: a
+ * looping clip restarts on its own, which for the plank means it flies back up
+ * from under whoever is standing on it.
+ */
+function startSwing(u: SwingUnit): void {
+  u.state = 'swinging'
+  u.elapsed = 0
+  u.landed = false
+  u.holdTimer = 0
+  u.bounceTimer = 0
+  const anim = Animator.getMutableOrNull(u.entity)
+  if (anim !== null) {
+    for (const st of anim.states) {
+      st.playing = u.model.clips.indexOf(st.clip) >= 0
+      st.shouldReset = true
+      st.speed = u.model.playbackSpeed
+      st.loop = false
+    }
+  }
+  playSoundAt(swingSoundFor(u), u.origin, swingVolumeFor(u))
+  // The cue the death replay fires this off again from. Ignored while dead or
+  // replaying, so a re-fired swing cannot record itself (see recordHazardEvent).
+  recordHazardEvent(replayKey(u.name))
+}
+
+/**
+ * Back to rest, from anywhere in the cycle.
+ *
+ * Same reset take() does at load, plus the state the swing left behind. The
+ * replay calls this before it opens and again when it closes: opened off the
+ * death screen the killing swing is usually still mid-air, and a swing the
+ * RECAP started must never be left running as a live hazard once the camera
+ * hands back.
+ */
+function restSwing(u: SwingUnit): void {
+  if (Animator.getOrNull(u.entity) !== null) Animator.stopAllAnimations(u.entity, true)
+  u.state = 'idle'
+  u.elapsed = 0
+  u.timer = 0
+  u.landed = false
+  u.holdTimer = 0
+  u.bounceTimer = 0
+}
+
+function replayKey(name: string): string {
+  return `swing:${name}`
 }
 
 /**
@@ -830,49 +899,14 @@ function swingSystem(dt: number) {
           u.timer = SWING_TRAP_PLANK_TRIGGER_DELAY
           break
         }
-        if (armed) {
-          u.state = 'swinging'
-          u.elapsed = 0
-          u.landed = false
-          u.holdTimer = 0
-          u.bounceTimer = 0
-          // Every clip, not playSingleAnimation: that stops the others, and
-          // fplank's collider rides a SEPARATE clip from its visible board.
-          // speed is restored here too — a previous hold left it at 0.
-          const anim = Animator.getMutableOrNull(u.entity)
-          if (anim !== null) {
-            for (const st of anim.states) {
-              st.playing = u.model.clips.indexOf(st.clip) >= 0
-              st.shouldReset = true
-              st.speed = u.model.playbackSpeed
-              // NOT looping. A looping clip restarts on its own, which for the
-              // plank means it flies back up under whoever is standing on it.
-              st.loop = false
-            }
-          }
-          playSoundAt(swingSoundFor(u), u.origin, swingVolumeFor(u))
-        }
+        if (armed) startSwing(u)
         break
       }
 
       case 'armed': {
         u.timer -= dt
         if (u.timer > 0) break
-        u.state = 'swinging'
-        u.elapsed = 0
-        u.landed = false
-        u.holdTimer = 0
-        u.bounceTimer = 0
-        const anim = Animator.getMutableOrNull(u.entity)
-        if (anim !== null) {
-          for (const st of anim.states) {
-            st.playing = u.model.clips.indexOf(st.clip) >= 0
-            st.shouldReset = true
-            st.speed = u.model.playbackSpeed
-            st.loop = false
-          }
-        }
-        playSoundAt(swingSoundFor(u), u.origin, swingVolumeFor(u))
+        startSwing(u)
         break
       }
 

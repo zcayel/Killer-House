@@ -180,7 +180,17 @@ export const FONT_DATA = 'monospace' as const
 export const T_MICRO = 13 // footers, eyebrows, the exit line
 export const T_SMALL = 17 // leaderboard rows, supporting detail
 export const T_BODY = 21 // prose
-export const T_CLOCK = 50 // the live run clock — largest thing in the HUD (bumped up further, on request)
+export const T_CLOCK = 75 // the live run clock — largest thing in the HUD (+50%, on request)
+/**
+ * The HUD heart pips.
+ *
+ * Twice T_BODY, on request. They used to render at T_BODY, the same size as
+ * prose, which made the one readout you check mid-panic the same weight as a
+ * sentence. Hearts are a glance target: three glyphs that have to be countable
+ * without stopping, so they get their own step rather than borrowing the body
+ * size.
+ */
+export const T_HEART = T_BODY * 2
 export const T_HEAD = 48 // overlay headlines
 export const T_SCORE = 78 // the win screen's escape time; the score IS the win
 

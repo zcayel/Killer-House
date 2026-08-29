@@ -1,3 +1,4 @@
+import { isServer } from '@dcl/sdk/network'
 import { setupUi } from './ui'
 import { initGameState } from './gameState'
 import { initNotifications } from './notifications'
@@ -8,9 +9,13 @@ import { initChandelierCrush } from './traps/chandelierCrush'
 import { initSwingTraps } from './traps/swingTraps'
 import { initFallDeath } from './traps/fallDeath'
 import { initFenceTips } from './traps/fenceTips'
+import { initDeathCam } from './effects/deathCam'
+import { initVictoryCinematic } from './effects/victoryCinematic'
 import { initPlotBoundary } from './plotBoundary'
 import { initSkeletons } from './enemies/skeletons'
 import { initDeathEffects } from './effects/deathEffects'
+import { initQuake } from './effects/quake'
+import { initCameraShake } from './effects/cameraShake'
 import { initForceField } from './effects/forceField'
 import { initSounds } from './sounds'
 import { initCombat } from './combat'
@@ -19,7 +24,9 @@ import { initCandles } from './candles'
 import { initLightning } from './lightning'
 import { initDoors } from './doors'
 import { initDust } from './dust'
+import { initOldTable } from './decor/oldTable'
 import { initLeaderboard } from './leaderboard'
+import { initScores } from './scores'
 import { safeInit } from './safeSystem'
 
 // Guards against main() ever running twice on the same live engine. Live
@@ -34,12 +41,30 @@ import { safeInit } from './safeSystem'
 // reset the JS runtime state — a known category of issue on some clients).
 let hasRun = false
 
-export function main() {
+export async function main() {
   if (hasRun) {
     console.error('[index] main() was called again on an already-running engine — ignoring the second call to avoid duplicating every entity in the scene.')
     return
   }
   hasRun = true
+
+  // THE SERVER RUNS THIS SAME FILE, HEADLESSLY, so the branch has to come
+  // before everything — before setupUi(), before a single safeInit. Nothing
+  // below this point makes sense without a player attached to it: it would
+  // spawn a second full set of traps, skeletons and candles into the world
+  // with nobody to see them, which is the "six skeletons, three configured"
+  // failure again by a different route.
+  //
+  // The server owns ONE thing, the persistent leaderboard (server/server.ts).
+  // Gameplay is untouched and still runs entirely per-client — see the header
+  // of multiplayer.ts for why, which this change does not revisit.
+  //
+  // Imported dynamically so a client never pulls in @dcl/sdk/server at all.
+  if (isServer()) {
+    const { initServer } = await import('./server/server')
+    initServer()
+    return
+  }
 
   setupUi()
 
@@ -62,6 +87,9 @@ export function main() {
   safeInit(initSwingTraps, 'initSwingTraps')
   safeInit(initFallDeath, 'initFallDeath')
   safeInit(initFenceTips, 'initFenceTips')
+  safeInit(initDeathCam, 'initDeathCam')
+  // Before initGameLoop, which is what calls into it on a win.
+  safeInit(initVictoryCinematic, 'initVictoryCinematic')
   safeInit(initPlotBoundary, 'initPlotBoundary')
   safeInit(initSkeletons, 'initSkeletons')
 
@@ -72,5 +100,15 @@ export function main() {
   safeInit(initLightning, 'initLightning')
   safeInit(initDoors, 'initDoors')
   safeInit(initDust, 'initDust')
+  safeInit(initOldTable, 'initOldTable')
+  // Before initLeaderboard: this fires the first read of the persisted board,
+  // so the plates have real data to paint as soon as they are adopted rather
+  // than showing "Be the first" to a scene that has had a hundred escapes.
+  safeInit(initScores, 'initScores')
   safeInit(initLeaderboard, 'initLeaderboard')
+  // LAST, deliberately. initQuake snapshots the scenery it is allowed to move,
+  // and anything spawned after this point is excluded from that list — which is
+  // exactly what keeps the synced tombstones out of it.
+  safeInit(initQuake, 'initQuake')
+  safeInit(initCameraShake, 'initCameraShake')
 }
