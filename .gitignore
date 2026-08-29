@@ -12,3 +12,7 @@ yarn-error.log*
 # Python bytecode from tools/ — regenerated on every run, pure diff noise
 __pycache__/
 *.pyc
+
+# Claude Code local tooling: installed skills and 37MB of git worktrees.
+# Reinstall the skills with: npx skills add dcl-regenesislabs/opendcl
+.claude/

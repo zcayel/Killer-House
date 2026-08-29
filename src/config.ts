@@ -1798,6 +1798,35 @@ export const HOUSE_WING_RECTS = [
 export const LIGHTNING_STRIKE_ENABLED = true
 export const LIGHTNING_KILL_RADIUS = 2.6 // metres from the strike point — same as the warning ring
 export const LIGHTNING_HOUSE_MARGIN = 2.0 // keep strike points this far off the house footprint
+
+/**
+ * THE SPAWN IS SANCTUARY. No bolt is aimed there and none can reach in.
+ *
+ * WHY THIS WAS NEEDED, precisely: the storm HUNTS. huntStrikePoint() leads the
+ * player and then clamps the result into YARD_BOUNDS, whose minZ is 1.8 —
+ * while SPAWN_POSITION is (27, 0.1, 1), just outside that edge. So a lead aimed
+ * at someone standing on the spawn point could not be placed on them, but it
+ * could be placed at z=1.8 directly in front of them, 0.8m away. With
+ * LIGHTNING_KILL_RADIUS at 2.6 that is a clean kill on a player who has not
+ * moved yet and, on a respawn, may not even have finished loading in.
+ *
+ * The random path had the same hole from the other side: YARD_BOUNDS already
+ * keeps points off the spawn point itself, but nothing kept them 2.6m off it.
+ *
+ * TWO RULES, the same shape the house uses. Points are never CHOSEN within
+ * SAFE + LIGHTNING_KILL_RADIUS of the spawn centre, which means no legal bolt's
+ * ring can overlap the sanctuary at all; and the kill test independently
+ * refuses inside SAFE, so the sanctuary holds even if a point somehow gets
+ * placed badly. Neither rule relies on the other being right.
+ *
+ * SIZE. Centred on SPAWN_POSITION. scene.json's spawn box is x 26..28,
+ * z -0.5..1.5, whose furthest corner is 1.80m out — so 4m covers the whole box
+ * with room to stand and get your bearings before stepping into the weather.
+ * The exclusion it implies (6.6m) costs about 6% of the yard's strike area and
+ * does not touch HOUSE_RECT, which starts at z 8: the two exclusions sit apart
+ * rather than compounding into a corner the storm cannot use.
+ */
+export const LIGHTNING_SPAWN_SAFE_RADIUS = 4.0
 // THE BOLT IS A FLIPBOOK, baked in Blender — see lightning-source/.
 //
 // The atlas is LIGHTNING_FLIPBOOK_GRID x GRID frames of a Voronoi
