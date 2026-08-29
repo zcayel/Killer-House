@@ -62,7 +62,6 @@ export enum EntityNames {
   fplank_glb_2 = "fplank.glb_2",
   fplank_glb_3 = "fplank.glb_3",
   fplank_glb_4 = "fplank.glb_4",
-  leadboard_glb = "leadboard.glb",
   oldtable = "oldtable",
   pilar = "pilar",
   pilar_glb_2 = "pilar.glb_2",

@@ -50,6 +50,29 @@ import { addSafeSystem, reportFailure } from './safeSystem'
  */
 const BOARD_ENTITY_NAMES = ['leadboard.glb', 'leaderboard', 'leaderboard.glb', 'leadboard']
 
+/**
+ * Where the board stands when there is NO placed anchor to hang it on.
+ *
+ * Measured out of main.crdt while the anchor still existed, so deleting
+ * leadboard.glb from Creator Hub leaves the board exactly where it was rather
+ * than deleting it too. That matters because this file draws every pixel
+ * itself now — the model was only ever supplying a position, a rotation and a
+ * scale, and all three are just numbers.
+ *
+ * The scale is not cosmetic: every offset in this file is in the anchor's local
+ * space, so the board is 2.22x wider and 2.11x taller in world than the
+ * constants above suggest. Reproduce it or the layout silently shrinks.
+ *
+ * Prefer the placed anchor when one exists — dragging it in Creator Hub stays
+ * the easiest way to move the board, and these numbers are only the fallback.
+ */
+const FALLBACK_POSITION = Vector3.create(4.75, 1.0, 7.156)
+const FALLBACK_YAW = -89.7
+const FALLBACK_SCALE = Vector3.create(2.22, 2.11, 1.07)
+
+/** Frames to wait for a placed anchor before standing the board up ourselves. */
+const ANCHOR_WAIT_FRAMES = 120
+
 /** Places on the escape board. Matches TOP_N on the server, which sends 10. */
 const ROWS = 10
 /** Places on the deaths board. */
@@ -414,22 +437,28 @@ function refreshSystem(_dt: number): void {
   // same reason the chandelier and the swing traps keep looking for theirs.
   if (board === null) {
     board = findBoard()
-    if (board === null) {
-      // Say so rather than standing there empty forever. A renamed or deleted
-      // anchor is otherwise completely invisible from here, and there is no
-      // console on a phone to notice it with.
-      if (++retries === 300) {
-        const tried = BOARD_ENTITY_NAMES.join(', ')
-        reportFailure('leaderboard', `no placed anchor found; tried ${tried}`)
-        console.log(`[leaderboard] no placed anchor found; tried ${tried}`)
-      }
-      return
-    }
 
-    // Stop the old baked art rendering, keeping the entity as a pure transform
-    // anchor. Removing the model rather than hiding the entity matters: hiding
-    // could take the children — our whole board — down with it.
-    if (GltfContainer.has(board)) GltfContainer.deleteFrom(board)
+    if (board === null) {
+      // The composite may not have produced the anchor on the very first frames,
+      // so give it a moment before concluding there isn't one.
+      if (++retries < ANCHOR_WAIT_FRAMES) return
+
+      // No anchor at all — it was never placed, was renamed, or was deleted
+      // from Creator Hub. Stand the board up ourselves rather than silently
+      // rendering nothing, which is what used to happen.
+      board = engine.addEntity()
+      Transform.create(board, {
+        position: FALLBACK_POSITION,
+        rotation: Quaternion.fromEulerDegrees(0, FALLBACK_YAW, 0),
+        scale: FALLBACK_SCALE
+      })
+      console.log(`[leaderboard] no placed anchor (tried ${BOARD_ENTITY_NAMES.join(', ')}); using the built-in position`)
+    } else if (GltfContainer.has(board)) {
+      // Stop the old baked art rendering, keeping the entity as a pure transform
+      // anchor. Removing the model rather than hiding the entity matters: hiding
+      // could take the children — our whole board — down with it.
+      GltfContainer.deleteFrom(board)
+    }
 
     buildBoard()
     console.log(`[leaderboard] built ${ROWS} escape rows and ${DEATH_ROWS} death rows on the placed anchor`)
