@@ -35,14 +35,123 @@ export const SPAWN_POSITION = Vector3.create(27, 0.1, 1)
 // cameraTarget (28, 3, 8) — atan2(28-27, 8-1) — so the first spawn and every
 // respawn now agree on where "facing the house" is.
 export const SPAWN_ROTATION = Quaternion.fromEulerDegrees(0, 8, 0)
+// DEATH REPLAY — records the last seconds of your life and plays them back.
+//
+// A rolling buffer of position and facing is kept while you are alive; on death
+// it is frozen and a ghost walks that exact path with the camera trailing it.
+//
+// WHAT IT CANNOT DO: the traps are not rewound. SDK7 offers no way to scrub a
+// GLB animation to an arbitrary time, so the scene around the ghost is live
+// rather than five seconds old. Your movement is a true recording; everything
+// else is the present. See effects/deathCam.ts.
+export const DEATH_CAM_ENABLED = true
+// Off: the replay and the avatar clone appear ONLY when Death Replay is
+// pressed, and both are gone the moment it finishes. Dying puts the shot on
+// the shelf; it does not take the camera off you.
+export const DEATH_CAM_AUTOPLAY = false
+// How much of your life to keep. 5s at 20Hz is 100 samples — small enough to
+// hold and long enough to show the approach that got you killed, not just the
+// last step.
+export const DEATH_REPLAY_SECONDS = 5
+export const DEATH_REPLAY_SAMPLE_HZ = 20
+// Hold on the final frame after the path runs out, so the moment of impact is
+// not gone the instant it arrives.
+export const DEATH_REPLAY_TAIL_SECONDS = 1.4
+// Where the trailing camera sits relative to the ghost.
+export const DEATH_CAM_DISTANCE = 4.2  // metres behind
+/**
+ * Where on the body the camera aims, and how high above that line it sits at
+ * rest. Replaces the old flat DEATH_CAM_HEIGHT: once the camera could be
+ * orbited and pitched, a fixed world-space height stopped meaning anything —
+ * the shot is now a distance and two angles around a point on the avatar.
+ * 15 degrees at 4.2m puts the eye ~2.1m up, which is the framing it had before.
+ */
+export const DEATH_CAM_TARGET_HEIGHT = 1.0
+export const DEATH_CAM_PITCH = 15
+export const DEATH_CAM_PITCH_MIN = -25 // below this you are looking up through the floor
+export const DEATH_CAM_PITCH_MAX = 72  // above this it is a top-down map view
+
+/**
+ * CAMERA CONTROL DURING THE REPLAY.
+ *
+ * PBVirtualCamera itself carries exactly two fields (defaultTransition,
+ * lookAtEntity) and has no free-look mode, so the pose is ours to compute every
+ * frame. These are the keyboard axes for that: A/D swing around the ghost, W/S
+ * push in and pull out. Mouse look is layered on top of them — see
+ * DEATH_CAM_MOUSE_SENSITIVITY below.
+ *
+ * The keys work because InputModifier's disableAll stops LOCOMOTION only —
+ * scene input actions still arrive while the body is frozen (see
+ * previewSkipPressed in gameLoop.ts). The same keys that would walk you drive
+ * the camera instead.
+ */
+/**
+ * MOUSE LOOK. Degrees of camera swing per pixel the pointer moves.
+ *
+ * PBPrimaryPointerInfo.screenDelta reports pointer movement since the last
+ * frame, which is a genuine look axis — the earlier claim in this file that
+ * SDK7 exposes no such thing was simply wrong.
+ *
+ * MOBILE GETS NOTHING FROM IT. PointerType in SDK 7.24.4 enumerates exactly
+ * POT_NONE and POT_MOUSE, and the component's own documentation says "Touch,
+ * Pad, and Wand support, as well as dragging, will be added later." A finger
+ * drag does not arrive here. That is why the on-screen pads exist and are not
+ * a desktop afterthought — on a phone they are the only control there is.
+ */
+export const DEATH_CAM_MOUSE_SENSITIVITY = 0.2
+
+/**
+ * SMOOTHING. The raw record shakes, and it is not the sample rate.
+ *
+ * Two separate sources. The recorded yaw is the player's own camera facing,
+ * which jitters every frame under the mouse; the camera position is derived
+ * from it, so that noise is amplified straight into the shot. And linear
+ * interpolation between 20Hz samples is only C0 continuous — position is
+ * unbroken but VELOCITY snaps at every sample, twenty visible kinks a second.
+ *
+ * So: a moving average over the frozen record kills the sensor noise,
+ * Catmull-Rom between samples restores C1 continuity, and the camera is damped
+ * toward its target rather than snapped to it. RESPONSE is the damping rate —
+ * higher follows the ghost more tightly, lower glides more.
+ */
+export const DEATH_CAM_SMOOTH_TAPS = 2 // samples either side in the moving average
+export const DEATH_CAM_RESPONSE = 9
+
 export const RESPAWN_DELAY_SECONDS = 10
+/**
+ * How long the death screen HOLDS OFF after you die.
+ *
+ * MEASURED FROM THE HEADSTONE (on request: the death UI comes up 0.2s
+ * after the tombstone). Non-lightning deaths raise their stone on the frame you
+ * die (becomeTombstone), so the two are the same clock and 0.5 is the gap.
+ *
+ * It was 1.5, chosen to clear the 0.9s electrocution flash — but lightning no
+ * longer shares this figure (ELECTROCUTION_SCREEN_AT below runs its own paced
+ * sequence), so the only thing 1.5 was still doing here was making every other
+ * death sit on a blank screen. Walked down 1.5 -> 0.5 -> 0.3 -> 0.2 by feel;
+ * 0.2 matches ELECTROCUTION_SCREEN_DELAY so the stone-to-screen beat is the
+ * same however you died. The 0.33s death shake now runs PAST this — deliberate,
+ * the screen arriving mid-shake reads as part of the impact rather than as a
+ * separate event.
+ */
+export const DEATH_SCREEN_DELAY_SECONDS = 0.2
 export const RESPAWN_GRACE_SECONDS = 2 // after respawning, nothing can kill you for this long
 
 // ---------------------------------------------------------------------------
-// DEATH EFFECTS — camera shake + blood
+// DEATH EFFECTS — ground quake + blood
 // ---------------------------------------------------------------------------
-export const DEATH_SHAKE_SECONDS = 0.6 // how long the camera shakes after a hit
-export const DEATH_SHAKE_AMPLITUDE = 0.35 // meters of camera jitter at the start of the shake
+
+/**
+ * GROUND QUAKE — the tremor when thunder lands. See effects/quake.ts.
+ *
+ * AMPLITUDE IS METRES OF SCENERY MOVEMENT, and it wants to stay small. Sliding
+ * the world is what sells the shake, but the world includes the floor the
+ * player is standing on: a few centimetres is a convincing jolt, while a
+ * visible shove looks like the house came off its foundations.
+ */
+export const QUAKE_SECONDS = 0.7
+export const QUAKE_AMPLITUDE = 0.055
+
 export const BLOOD_MAX_STAINS = 12 // oldest floor stain is removed beyond this
 // THREE SPLAT DESIGNS, cycled in order — on request 2026-08-20.
 //
@@ -71,9 +180,48 @@ export const BLOOD_POOL_TEXTURES = [
 // The burst texture is drawn procedurally (a 17-point irregular star polygon
 // with a hot white core falling to a saturated rim) so it carries no licence.
 export const ELECTROCUTION_TEXTURE = 'assets/scene/Textures/electrocution_burst.png'
+/**
+ * The X-rayed skeleton, as a FLAT SPRITE rather than the scene's skeleton .glb.
+ *
+ * On request: the 3D model is a walking enemy built to be seen from any angle,
+ * and a 0.9s flash does not need that — from the wrong side it read as a lump
+ * rather than as the joke. A billboarded cutout always presents the same
+ * legible dancing pose, costs one plane instead of a rigged mesh, and matches
+ * the flat cartoon burst it sits inside.
+ *
+ * Drawn procedurally (capsules and discs into a coverage buffer, hand-rolled
+ * PNG encode) so it carries no licence.
+ */
+export const ELECTROCUTION_SKELETON_TEXTURE = 'assets/scene/Textures/electrocution_skeleton.png'
+export const ELECTROCUTION_SKELETON_HEIGHT = 2.3 // metres tall, roughly avatar scale
 export const ELECTROCUTION_SECONDS = 0.9   // whole effect, burst and skeleton
 export const ELECTROCUTION_BURST_SIZE = 4.2 // metres across at full spread
 export const ELECTROCUTION_CAUSE = 'Struck by lightning' // must match lightning.ts
+
+/**
+ * THE LIGHTNING DEATH, beat by beat (on request), all measured from the STRIKE:
+ *
+ *   0.0   strike — burst + skeleton sprite appear instantly
+ *   +0.3  headstone drops        (ELECTROCUTION_TOMBSTONE_DELAY)
+ *   +0.2  death screen           (ELECTROCUTION_SCREEN_DELAY)
+ *
+ * These delays used to be stacked ON TOP of ELECTROCUTION_SECONDS, so nothing
+ * happened until the 0.9s sprite had fully finished and the whole chain ran to
+ * 2.9s. They are now offsets from the strike itself, which is why STONE_AT is
+ * no longer derived from ELECTROCUTION_SECONDS.
+ *
+ * CONSEQUENCE, on purpose: the sprite is still on screen (0.9s) when the stone
+ * lands at 0.3 and when the screen comes in at 0.5. The X-ray now plays UNDER
+ * the rest of the sequence rather than being waited out — the beats overlap.
+ *
+ * Every other death still uses DEATH_SCREEN_DELAY_SECONDS and drops its
+ * headstone immediately.
+ */
+export const ELECTROCUTION_TOMBSTONE_DELAY = 0.3
+export const ELECTROCUTION_SCREEN_DELAY = 0.2
+/** Strike, then stone, then screen. Derived so the beats cannot drift apart. */
+export const ELECTROCUTION_STONE_AT = ELECTROCUTION_TOMBSTONE_DELAY
+export const ELECTROCUTION_SCREEN_AT = ELECTROCUTION_STONE_AT + ELECTROCUTION_SCREEN_DELAY
 
 export const BLOOD_OVERLAY_TEXTURE = 'assets/scene/Textures/blood_overlay.png' // screen splatter during the death screen
 
@@ -323,7 +471,7 @@ export const MODEL_CANDLE_LIT = 'assets/asset-packs/candle_03/HWN20_Candle_03.gl
 // offset (below) so multiple players' candles at the "same" spot render side
 // by side instead of overlapping. Every round, each player draws their OWN
 // random subset of RITUAL_CANDLES_REQUIRED from their OWN pool — see
-// gameLoop.ts/multiplayer.ts. Spread across yard (4), ground floor (7), and
+// gameLoop.ts/multiplayer.ts. Spread across yard (4), ground floor (8), and
 // upstairs (3) so no single room finishes it.
 // Every ground-floor entry below was checked against WALL_SPIKE_UNITS'
 // strike points: each keeps a flat/3D margin comfortably over
@@ -422,6 +570,25 @@ export const CANDLE_POOL: CandleSpot[] = [
   // would have been swept through on every descent. The move also widens the
   // spike margin this spot was flagged for, 2.20m -> 2.42m.
   { pos: Vector3.create(26.59, 2.66, 13.16) },
+  // ON THE AXE CARPET (carpet_3, added in the editor at (20.5, 2.75, 12.0)).
+  //
+  // The axe corridor had no candle at all — the one part of the ground floor
+  // the round could never send you to. Both blades hang from x 20.369 and each
+  // sweeps a thin lane: z 10.39-11.45 and z 12.95-14.02, x 13.60-23.55, from
+  // y 3.25 up. That leaves a 1.5m safe strip between them, and the carpet
+  // (x 17.65-23.35, z 10.09-13.91) lies across all three.
+  //
+  // z 12.22 is the middle of that strip and NOT in either lane, on request.
+  // Measured against the baked lethal boxes with hits.ts's own avatar (r 0.40,
+  // h 1.90): 0.69m of air between the player's skin and the nearest lethal box
+  // at the base spot, and still 0.47m at the worst CANDLE_OFFSET_BUCKETS nudge.
+  // So a full CANDLE_CHANNEL_SECONDS stand here is survivable — but both axes
+  // pass within a metre of you while you do it, which is the point of putting
+  // it here rather than off to one side.
+  //
+  // y 2.77 stands it on the rug (floor 2.70, carpet top 2.766) instead of
+  // sinking the wax into it.
+  { pos: Vector3.create(19.5, 2.77, 12.22) },
   { pos: Vector3.create(18.5, 2.65, 16.2) }, // on the carpet — the pressure plate that
   // used to fire a knife from the wall here was removed on request, so this is
   // now just an exposed spot in the middle of the room.
@@ -534,11 +701,388 @@ export const PORTAL_ENTRY_DELAY_SECONDS = 5
 // its own this many seconds after opening. Removed on request: reaching the
 // portal is the last objective now, not a formality. See the long note in
 // gameLoop.ts where the auto-win used to be.)
-export const PORTAL_RADIUS = 0.6
-export const PORTAL_HEIGHT_OFFSET = 1.2 // above the ground
+/**
+ * THE PORTAL'S ONE SIZE KNOB. Doubled on request (0.6 -> 1.2) — 100% bigger.
+ *
+ * Everything about the portal hangs off its root Transform, which is scaled by
+ * PORTAL_RADIUS * 2 (gameLoop.ts): the vortex disc, the click hitbox and the
+ * glow are all children, so they inherit it and this is the only number that
+ * has to move. The disc now reads about 6.2m across (2 * RADIUS * DISC_SCALE).
+ *
+ * It also widens the WALK-THROUGH win, which is checked at PORTAL_RADIUS + 1 —
+ * deliberate: a portal you can see from across the yard that only counts if you
+ * stand on one exact tile is worse than one whose trigger matches its mouth.
+ */
+export const PORTAL_RADIUS = 1.2
+/**
+ * Above the ground. Doubled WITH the radius, on purpose: the disc is centred on
+ * this point, so leaving it at 1.2 while the portal grew would have buried the
+ * bottom 1.9m of it in the lawn. Scaled together, it sits on the ground exactly
+ * as it did before, just bigger.
+ */
+export const PORTAL_HEIGHT_OFFSET = 2.4
+// THE PORTAL IS A SWIRLING VORTEX, not a glowing ball.
+//
+// It used to be an emissive sphere, which read as "a light" rather than "a way
+// out" — nothing about it said you could step INTO it. The vortex is a flat
+// disc that always faces the player, spinning continuously.
+//
+// The texture is drawn procedurally (a 5-arm logarithmic spiral, dark rim ->
+// violet -> indigo -> blue -> white core) so it carries no licence.
+export const PORTAL_VORTEX_TEXTURE = 'assets/scene/Textures/portal_vortex.png'
+// Degrees per second. Negative so it winds INWARD the way the arms point —
+// spun the other way it reads as something being flung out of the portal.
+export const PORTAL_SPIN_SPEED = -55
+// The disc is drawn wider than PORTAL_RADIUS because the texture fades out at
+// its own edge; matching them exactly gives a hard circular cut.
+export const PORTAL_DISC_SCALE = 2.6
+
 export const PORTAL_COLOR = Color3.create(0.55, 0.25, 0.95) // mystical violet — reads distinct from warm candle flame
 export const PORTAL_GLOW_INTENSITY = 4000
 export const PORTAL_GLOW_RANGE = 10
+
+// ---------------------------------------------------------------------------
+// THE OLD TABLE
+// ---------------------------------------------------------------------------
+//
+// Read by decor/oldTable.ts, which re-asserts the placed entity's model after
+// it was reported invisible in world. Every number here is COPIED OUT of
+// main.crdt entity 583 - the file the runtime loads - so a code-spawned
+// fallback lands exactly where Creator Hub put it. See the header of
+// decor/oldTable.ts for what was ruled out before this existed.
+export const OLD_TABLE_MODEL = 'assets/scene/Models/oldtable/oldtable.glb'
+export const OLD_TABLE_POSITION = Vector3.create(18, 3.213, 18.181)
+// CL_NONE. The visible table top is not a collider; the model's own
+// `oldtable_collider` node is what you bump into.
+export const OLD_TABLE_VISIBLE_COLLISION_MASK = 0
+// CL_POINTER | CL_PHYSICS, as placed. Named rather than defaulted because the
+// SDK default for this field is CL_PHYSICS alone, which would quietly drop the
+// pointer layer the scene was authored with.
+export const OLD_TABLE_INVISIBLE_COLLISION_MASK = 3
+
+// ---------------------------------------------------------------------------
+// THE VICTORY CINEMATIC - the one shot you can only get by stepping through.
+// ---------------------------------------------------------------------------
+//
+// WHAT IT IS. The instant the portal takes you (gameLoop.ts's win(), which is
+// only ever reached from the portal), the camera cuts to a scripted shot of
+// YOUR avatar stood on a heap of skulls in front of the leaderboard, throwing
+// celebration emotes, while the camera arcs out and up and the board rises
+// behind you. Then the win screen fades in over the still-running frame.
+//
+// WHY IT LIVES WHERE IT LIVES. The board is the only object in the scene that
+// says your name, so the reward for escaping is being SEEN in front of it. The
+// stage is parked on the board's own centre line, out in the open yard, and the
+// camera never leaves the wedge in front of it - see VICTORY_SHOT below.
+//
+// IT IS LOCAL, LIKE THE DEATH RECAP. The pile is built on this client only, so
+// other players in the room do not see it (they see your avatar teleport to the
+// board and celebrate, which is true and reads fine). Syncing it would mean one
+// pile per player fighting for the same spot, which is a worse artefact than
+// the one it fixes. Same call deathCam.ts makes for its replay headstone.
+export const VICTORY_CINEMATIC_ENABLED = true
+
+/**
+ * WHERE THE HERO STANDS, in world metres.
+ *
+ * Measured, not guessed. leadboard.glb is placed at (4.75, 1.0, 7.156) yawed
+ * -89.7 degrees (main.crdt, the file the runtime actually loads - NOT
+ * main.composite, which has disagreed with it by eleven metres before now).
+ * Its art face looks down local -Z, and that yaw turns local -Z into world +X,
+ * so the board faces +X and "in front of it" means a LARGER x. The face's own
+ * centre works out at z ~7.49, which is what this z is rounded to.
+ *
+ * 6.45m out from the board plane. Clear of everything placed nearby: the
+ * grave_31 at (7.917, 0, 7.751) is 3.3m away and the yard candle at (10, 0, 4)
+ * is 3.7m - both outside VICTORY_PILE_RADIUS with room to spare, both still in
+ * frame, which is a graveyard doing its job rather than a collision.
+ */
+export const VICTORY_STAGE_POSITION = Vector3.create(11.2, 0, 6.86)
+
+/**
+ * THE PILE. A cone of skulls, not a stack - height falls off with radius as
+ * H * (1 - (r/R)^VICTORY_PILE_FALLOFF), which is the shape a heap of round
+ * things actually settles into. Skulls are scattered over that surface and sunk
+ * slightly into it so no one of them reads as balanced on a point.
+ */
+/**
+ * 1.5m, and it started at 2.2. THE FIRST HEAP WAS NOT A HEAP.
+ *
+ * Spread over a 4.4m circle, 54 skulls covered 39% of the cone's surface: a
+ * block-out render of the real models showed skulls SCATTERED ON THE GROUND
+ * around someone standing among them, which is not what was asked for and not
+ * what the shot needs. Pulling the radius in to 1.5 (and the count up to 62)
+ * takes coverage to 85% - dense enough to read as a single mass at wide-shot
+ * distance, loose enough that individual skulls still catch the light rather
+ * than merging into a lump. tools/verify_victory_shot.py prints the coverage.
+ *
+ * The height did not move with it, so the same 1.6m of heap now rises over a
+ * 1.5m radius instead of 2.2: a proper mound rather than a low spread.
+ */
+export const VICTORY_PILE_RADIUS = 1.5
+export const VICTORY_PILE_HEIGHT = 1.6
+export const VICTORY_PILE_FALLOFF = 1.6
+/**
+ * Skull count. 62 of them, at 196-456 triangles each, is 17.4k - a ninth of
+ * this 16-parcel scene's triangle allowance, standing for about fifteen
+ * seconds. Raise it for a denser heap; it does not make the heap taller, only
+ * fuller, because the summit height is set by VICTORY_PILE_HEIGHT alone.
+ */
+export const VICTORY_PILE_SKULLS = 62
+/**
+ * How the skulls are spread from the summit out to the rim: a skull's radius is
+ * drawn as R * random^SPREAD.
+ *
+ * 0.5 is the textbook answer (uniform over the DISC) and it is wrong here. It
+ * left two skulls within three-quarters of a metre of the summit, which is the
+ * exact patch of ground the hero is standing on and the one the camera is
+ * pointed at - a bald crown with a fringe of skulls around the bottom. 1.0
+ * (uniform along the radius) overcorrects into a spike.
+ *
+ * 0.72 puts ten skulls around the feet and still keeps twice as many at the
+ * base as at the top, so it reads as a heap that was piled rather than one that
+ * was arranged. tools/verify_victory_shot.py prints the distribution and fails
+ * if the summit ever goes bare again.
+ */
+export const VICTORY_PILE_SPREAD = 0.72
+/**
+ * Two models, mixed. BonesSkull_01 is the bigger and CHEAPER of the two (196
+ * triangles to 456), so it carries the bulk and the finer one is sprinkled
+ * through it - a heap of one repeated mesh reads as wallpaper from three metres
+ * away. Listed twice to weight the draw toward it.
+ */
+export const VICTORY_SKULL_MODELS = [
+  'assets/asset-packs/skull/BonesSkull_01/BonesSkull_01.glb',
+  'assets/asset-packs/skull/BonesSkull_01/BonesSkull_01.glb',
+  'assets/asset-packs/skull_01/HWN20_Skull_01.glb'
+]
+/**
+ * How far a skull's face may be turned off "pointing away from the summit",
+ * in degrees either side.
+ *
+ * WITHOUT THIS THE HEAP IS A PILE OF ROCKS. A skull's face is on one side of
+ * it, and with the yaw drawn uniformly from the whole circle most of them
+ * present the back of the cranium - a smooth dome - to any given camera. A
+ * block-out render of the real models made that unmistakable: recognisably a
+ * heap, not recognisably a heap of SKULLS.
+ *
+ * Turning them to face outward from the centre fixes it from every angle at
+ * once, and is what actually happens when round things are tipped onto a pile:
+ * they roll until they are looking away from it. 65 degrees of slop keeps that
+ * from reading as an arrangement.
+ */
+export const VICTORY_SKULL_FACE_JITTER = 65
+export const VICTORY_SKULL_SCALE_MIN = 0.85
+export const VICTORY_SKULL_SCALE_MAX = 1.3
+/** How far each skull is pushed into the cone surface, as a fraction of its own height. */
+export const VICTORY_SKULL_SINK = 0.28
+/**
+ * No skull inside this radius of the summit. The avatar's feet occupy roughly
+ * 0.35m and a skull's face poking up through them is the one way this shot can
+ * look broken rather than triumphant.
+ */
+export const VICTORY_PILE_CLEAR_RADIUS = 0.24
+
+/**
+ * Where the avatar's FEET go - above VICTORY_PILE_HEIGHT by about a skull's
+ * crown, so the summit skulls come up to the ankles and the hero is standing IN
+ * the top of the heap rather than hovering over it. As tuned, the tallest skull
+ * on the pile crowns at exactly this height and the ones around it sit a few
+ * centimetres under the boot.
+ *
+ * The invisible collider under the pile has its top at exactly this height, so
+ * the avatar lands on it instead of dropping through to the yard.
+ */
+export const VICTORY_STAND_HEIGHT = 1.82
+/**
+ * Radius of the invisible cap the avatar actually stands on, world metres.
+ *
+ * An absolute measurement rather than a fraction of VICTORY_PILE_RADIUS, which
+ * is what it was: tied to the radius, tightening the heap from 2.2m to 1.5m
+ * silently shrank the standing surface to a third of a metre and left the
+ * avatar teetering on a post. This is roughly the width of a pair of feet plus
+ * a margin, and it does not care how big the heap around it is.
+ */
+export const VICTORY_STAND_RADIUS = 0.6
+
+// ── THE SET DRESSING ────────────────────────────────────────────────────────
+//
+// The heap is not the only thing in frame, so the rest of the frame is staged
+// too: the yard's own headstones are struck for the duration and two are set
+// out flanking the pile, nearer the board. On request.
+//
+// STRUCK AND REBUILT, NOT MOVED. The graves in the yard are placed entities
+// that belong to main.crdt, and writing their Transforms would mean owning the
+// job of putting all of them back exactly — including on every path that ends
+// the cinematic early, and including a round that crashed halfway through. A
+// VisibilityComponent is one boolean per entity, restored the same way, and a
+// mis-restore leaves a grave visible rather than a grave in the wrong place.
+// The two flanking stones are ours, built and deleted with the pile.
+
+/**
+ * Headstones within this of the stage centre are hidden while the shot runs.
+ *
+ * 6m takes the three that are actually in frame — the grave_31 at (7.92, 7.75)
+ * 3.4m away, the grave_15 at (13.50, 4.00) at 3.7m, and the grave_31 at
+ * (7.92, 3.00) at 5.1m. The next one out is 6.3m and reads as the graveyard
+ * carrying on behind the shot, which is wanted.
+ *
+ * Matched on the MODEL PATH containing "grave", not on a list of entity names:
+ * the names are hand-typed in Creator Hub and a renamed stone would silently
+ * stay standing in the middle of the composition.
+ */
+export const VICTORY_SET_CLEAR_RADIUS = 6
+/**
+ * Substrings a placed model's src is tested against; any match is struck.
+ *
+ * THE HOUSE IS ON THIS LIST AND IT IS NOT COSMETIC. KHN.glb's world bounding
+ * box is x 14.39..34.72, z 4.38..26.82 — and the shot's camera runs from
+ * x 13.97 to x 18.50 along z ~5.9..7.8. Every keyframe past the opening is
+ * INSIDE the house footprint, so for most of the arc the camera was sat in the
+ * ground-floor room looking west at the hero THROUGH an exterior wall. Striking
+ * it is what makes the composition possible at all, not a tidy-up.
+ *
+ * Matched on the model PATH rather than a list of entity names, because the
+ * names are hand-typed in Creator Hub: the house entity is still called
+ * "KILLERHOUSE_.glb" even though it loads KHN.glb, which is exactly the kind of
+ * drift a name list does not survive.
+ *
+ * The house is struck regardless of VICTORY_SET_CLEAR_RADIUS — a 20m building
+ * whose origin is 12m away is not something a radius test can reason about.
+ */
+export const VICTORY_SET_CLEAR_MATCH = ['grave']
+/** Struck wherever they are, no distance test. See above. */
+export const VICTORY_SET_CLEAR_ALWAYS = ['KHN.glb', 'KILLERHOUSE_']
+
+/**
+ * The two stones that flank the hero, as offsets from VICTORY_STAGE_POSITION.
+ *
+ * -X is TOWARD THE BOARD, +/-Z is the board's own width axis, so these sit
+ * 1.4m nearer the plate than the pile and 2.6m out either side of it — clear
+ * of the 1.5m heap by 1.1m, and close enough to the board to read as part of
+ * it rather than as two stones that happen to be standing there.
+ *
+ * WORLD AXES, NOT THE BOARD'S. leadboard.glb is yawed -89.7 degrees, so its
+ * true width axis is (0.0052, 0, 1.0) rather than dead +Z. Over 2.6m that is a
+ * 1.4cm error, which is a tenth of the stone's own width — not worth carrying
+ * a rotation through this file for. It does mean these move with the stage but
+ * not with the BOARD; re-derive if the plate is ever spun in Creator Hub.
+ */
+export const VICTORY_GRAVE_OFFSETS = [
+  Vector3.create(-1.4, 0, 2.6),
+  Vector3.create(-1.4, 0, -2.6)
+]
+/**
+ * Same model and scale as the yard's own grave_31s, deliberately: two stones
+ * that do not match the ones still standing behind them would read as props
+ * rather than as the graveyard rearranging itself.
+ */
+export const VICTORY_GRAVE_MODEL = 'assets/asset-packs/grave_31/HWN20_Grave_31.glb'
+export const VICTORY_GRAVE_SCALE = 1.5
+/**
+ * Turned to face the camera, which is the same way the yard's grave_31s are
+ * already turned (89.99 degrees, main.crdt) — the board's own normal comes out
+ * at 90.3, and the third of a degree between them is not visible. A yaw of
+ * theta sends a model's local +Z to (sin theta, cos theta), so 90 sends it to
+ * +X: straight out of the board, straight at the lens.
+ */
+export const VICTORY_GRAVE_YAW = 90.3
+
+/**
+ * WHICH WAY THE HERO LOOKS, as a point along the camera's own path.
+ *
+ * The avatar is turned ONCE, at the cut, because turning it again means another
+ * movePlayerTo and that would cut the celebration emote off mid-swing. So the
+ * single aim has to serve the whole shot, and the question is which moment of
+ * the arc to point at.
+ *
+ * NOT the end of the arc, which is the intuitive answer and the wrong one. The
+ * win screen goes up at VICTORY_CINEMATIC_HOLD_SECONDS (6.5) of
+ * VICTORY_CINEMATIC_SECONDS (8.5), so the part anyone actually watches is
+ * t 0..0.765 — over which the camera swings from -34 to -7 degrees. Aiming at
+ * the final +2 would leave the hero facing 36 degrees off the lens for the
+ * opening, which is the closest and most readable shot in the whole move.
+ *
+ * 0.40 sits on the mean bearing of the VISIBLE arc (-19.7 degrees) and is the
+ * value that minimises the worst-case error across it: never more than 14
+ * degrees off the lens at either end, which reads as looking at the camera
+ * rather than past it. Re-derive if the shot or the hold ever change.
+ */
+export const VICTORY_AVATAR_FACE_T = 0.4
+
+/**
+ * THE SHOT, as keyframes. `t` is normalised time across
+ * VICTORY_CINEMATIC_SECONDS; everything between is smoothstepped.
+ *
+ *   phi    degrees around the hero, measured from the axis pointing straight
+ *          out of the board (+X). Negative starts the camera on the -Z side, so
+ *          the whole move swings back through the middle and ends with the
+ *          board dead centre behind the avatar.
+ *   dist   metres from the hero's column.
+ *   camY   camera height, world metres.
+ *   aimY   height on that column the camera looks at.
+ *   fov    vertical field of view, degrees.
+ *
+ * These are not eyeballed, and they were not left where they first landed.
+ * Projecting leadboard.glb's four face corners, the pile's base ring and a
+ * 1.85m avatar through each keyframe (16:9, vertical fov) gives, in normalised
+ * screen coordinates where the visible frame is -1..1:
+ *
+ *   t=0.00  avatar 39% of frame height, feet at -0.25 with the heap filling
+ *           everything below them; board a wall down the right-hand side
+ *   t=0.30  avatar 34%, board leaning in from the right
+ *   t=0.66  avatar 28%, board x -0.31..+0.57
+ *   t=1.00  avatar 24% centred, feet -0.45 head +0.03; board x -0.42..+0.35,
+ *           y -0.62..+0.95 - the whole 11.8m of it in frame; the heap runs to
+ *           -1.28, so its flanks reach the bottom edge and continue past it
+ *
+ * THE FIRST VERSION OF THIS ARC WAS TIGHTER AND WORSE. It ended at dist 7.3
+ * from a camera 3.55m up looking at 4.35, which put the hero's feet at -0.70 -
+ * jammed into the bottom of the frame with the heap almost entirely cropped
+ * away underneath. The board was in shot and the thing the player was standing
+ * on was not, which is the wrong half of the picture to lose. Dropping the
+ * camera and its aim by ~0.9m lifts hero and heap into the middle and still
+ * clears the board's top edge, at the cost of two points of avatar height.
+ *
+ * If you move VICTORY_STAGE_POSITION, re-derive these rather than nudging them:
+ * the board is 9.75m wide and 11.8m tall as placed, the whole hero-plus-heap is
+ * 3.5m, and any shot containing all of the former can only ever give about a
+ * quarter of the frame to the latter. tools/verify_victory_shot.py does the
+ * arithmetic and fails on a crop.
+ */
+export const VICTORY_SHOT: { t: number; phi: number; dist: number; camY: number; aimY: number; fov: number }[] = [
+  { t: 0.0, phi: -34, dist: 4.0, camY: 0.9, aimY: 2.4, fov: 52 },
+  { t: 0.3, phi: -22, dist: 5.0, camY: 1.55, aimY: 2.85, fov: 54 },
+  { t: 0.66, phi: -10, dist: 6.3, camY: 2.15, aimY: 3.2, fov: 55 },
+  { t: 1.0, phi: 3, dist: 7.4, camY: 2.65, aimY: 3.6, fov: 56 }
+]
+
+/** How long the camera takes to travel the whole of VICTORY_SHOT. It then holds the final frame until the round resets. */
+export const VICTORY_CINEMATIC_SECONDS = 8.5
+/**
+ * How long the full win screen is held back for.
+ *
+ * SHORTER THAN THE MOVE, deliberately: the overlay arrives while the camera is
+ * still travelling, so the shot is never a thing you sit and wait out. The
+ * win-screen countdown (WIN_RESET_SECONDS) is frozen for this window and only
+ * starts once the overlay is up - otherwise the round would reset out from
+ * under the cinematic, which is the same trap the death replay already avoids
+ * by holding phaseCountdown while it plays.
+ */
+export const VICTORY_CINEMATIC_HOLD_SECONDS = 6.5
+
+/**
+ * The emotes, cycled. Predefined explorer emotes, so they need no asset and no
+ * download - and scene.json already carries ALLOW_TO_TRIGGER_AVATAR_EMOTE for
+ * the knife slash. A fresh one fires every VICTORY_EMOTE_INTERVAL seconds and
+ * the same one never lands twice running, so a second escape does not look like
+ * a replay of the first.
+ */
+export const VICTORY_EMOTES = ['fistpump', 'handsair', 'dab', 'disco', 'money', 'clap']
+export const VICTORY_EMOTE_INTERVAL = 3.2
+/** Beat between the cut and the first emote - the avatar should be seen landing before it starts dancing. */
+export const VICTORY_FIRST_EMOTE_DELAY = 0.45
+
 
 // LAST CANDLE — once only ONE of the player's own candles is left unlit, the
 // camera briefly cuts to show it. The beam/light/chime "beacon" that used to
@@ -1294,6 +1838,50 @@ export const LIGHTNING_BOLT_EMISSIVE = 6
 export const LIGHTNING_IMPACT_INTENSITY = 9000 // ground flash at the point of impact
 export const LIGHTNING_IMPACT_RANGE = 18
 
+// ── THE SPARK WARNING ───────────────────────────────────────────────────────
+//
+// Ground sparks dance on every spot a bolt is about to hit, for a few seconds
+// BEFORE it lands, so the strike can be dodged instead of merely survived.
+//
+// The old warning was the sky double-flash, and the numbers say why that was
+// not enough: the flash fires at strikeClock 0 and the kill test runs at
+// THUNDER_AT, which at LIGHTNING_SPEED 1.35 is 0.667 SECONDS later. That is
+// reaction time, not decision time — you could not cross the 2.6m kill radius
+// in it even if you read the flash perfectly. The sparks are a real telegraph:
+// they name the exact spot, they last long enough to walk out of, and the
+// strike commits to its points when they appear so walking away always works.
+export const LIGHTNING_WARN_SECONDS = 3
+/**
+ * The spark sprite: a 2x2 atlas of curled electric arcs, white filament in a
+ * blue glow, baked by tools/bake_spark_atlas.py.
+ *
+ * DRAWN, NOT DOWNLOADED, same as ELECTROCUTION_TEXTURE above - a generated
+ * texture carries no licence. Re-roll the four shapes with --seed.
+ */
+export const LIGHTNING_SPARK_TEXTURE = 'assets/scene/Textures/spark_arc.png'
+export const LIGHTNING_SPARK_ATLAS_GRID = 2
+/** Sparks per bolt. Fewer than the old dots, because each one is now a shape. */
+export const LIGHTNING_SPARK_COUNT = 5
+/** Scattered across the lethal ring itself, so the warning marks the real danger. */
+export const LIGHTNING_SPARK_RADIUS = LIGHTNING_KILL_RADIUS
+export const LIGHTNING_SPARK_SIZE = 0.62 // an arc needs room; the old dots were 0.17
+/**
+ * How far a spark CRAWLS across the ground before it re-seeds, in metres.
+ *
+ * They used to hop upward, which read as embers rising off a fire. Electricity
+ * earthing itself runs along the ground instead - so a spark now lies flat and
+ * skitters outward from where it lit.
+ */
+export const LIGHTNING_SPARK_CRAWL = 1.0
+/** Height off the ground plane. Just enough to stay out of the dirt. */
+export const LIGHTNING_SPARK_GROUND_Y = 0.05
+/** Re-seeds per second, per spark — high enough to crackle, not strobe. */
+export const LIGHTNING_SPARK_HZ = 9
+export const LIGHTNING_SPARK_EMISSIVE = 8
+/** The ground glow under the sparks, ramping in as the strike nears. */
+export const LIGHTNING_WARN_LIGHT_INTENSITY = 1400
+export const LIGHTNING_WARN_LIGHT_RANGE = 9
+
 /**
  * How fast the whole strike SEQUENCE plays — 1.35 = 35% faster (on request).
  *
@@ -1338,6 +1926,27 @@ export const LIGHTNING_BOLT_COUNT = 4
  * their kill radii (2.6m each) would merge into a single blob. Comfortably
  * clear of 2x LIGHTNING_KILL_RADIUS so the lethal ground stays two rings.
  */
+/**
+ * THE SKY AIMS AT YOU. On request: strike points were pure random over the
+ * yard, which made lightning weather rather than a threat — you could stand
+ * still for an entire round and never be hit.
+ *
+ * LIGHTNING_HUNT_BOLTS of the volley now lead your movement: the target is
+ * where you WILL be when the bolt lands, not where you are when it is chosen.
+ * The rest stay random, which is the part that keeps this survivable — four
+ * homing bolts every nine seconds is not a game, it is a countdown. One
+ * tracking bolt plus scatter means dodging is a decision, and the house is
+ * still absolute shelter.
+ *
+ * LEAD_MAX caps how far ahead it will aim. playerVelocity is a raw one-frame
+ * delta, so a single hitched frame can report an enormous speed; without the
+ * cap that one frame throws the bolt clear across the yard and the strike is
+ * wasted somewhere nobody is standing.
+ */
+export const LIGHTNING_HUNT_ENABLED = true
+export const LIGHTNING_HUNT_BOLTS = 1
+export const LIGHTNING_LEAD_MAX = 7 // metres of lead, against velocity spikes
+
 export const LIGHTNING_MIN_SEPARATION = 8
 
 /**
@@ -1351,8 +1960,35 @@ export const LIGHTNING_MIN_SEPARATION = 8
  */
 // TWICE AS OFTEN, on request: halved from 28-42s. The storm is the scene's
 // only ambient pressure, and one strike every ~35s left long dead stretches.
-export const LIGHTNING_STRIKE_INTERVAL_MIN = 9
-export const LIGHTNING_STRIKE_INTERVAL_MAX = 9
+// THE QUIET between strikes, on request — from one strike settling to the next
+// one's sparks lighting. NOT the strike-to-strike period: the sequence itself
+// (LIGHTNING_WARN_SECONDS of sparks plus the settle) sits on top, so the storm
+// actually goes off every 20s at this setting.
+//
+// This was briefly defined as the period instead, so that lengthening the spark
+// warning would not silently slow the storm. Reverted on request: the quiet is
+// the part you feel as a player — how long you get to breathe — and it is the
+// number worth being able to set directly.
+//
+// SET FOR A 20-SECOND FULL PERIOD, on request. Because this is the quiet and
+// not the period, that is a derived number rather than a typed one:
+//
+//   period = INTERVAL + LIGHTNING_WARN_SECONDS + STRIKE_SETTLE
+//          = INTERVAL + 3 + 2.2 / LIGHTNING_SPEED
+//          = INTERVAL + 3 + 1.630
+//
+// so 20 - 4.630 = 15.370. The phases are strictly sequential — lightning.ts's
+// warning branch returns before the countdown is touched — so that sum is exact
+// rather than approximate.
+//
+// RE-DERIVE THIS if LIGHTNING_WARN_SECONDS or LIGHTNING_SPEED ever move. Both
+// are inside the period, so either one changes the storm's rhythm while this
+// number sits here looking untouched, which is the whole trap the "define it as
+// the period" attempt above was trying to avoid.
+//
+// Set them equal for a metronome, apart for a storm that wanders.
+export const LIGHTNING_STRIKE_INTERVAL_MIN = 15.37
+export const LIGHTNING_STRIKE_INTERVAL_MAX = 15.37
 
 // THE STRIKE FLASH — a white-blue wash over the screen at the crack, on top of
 // the existing blackout. The blackout alone reads as the lights failing; this

@@ -66,6 +66,8 @@ import {
   Transform,
   GltfContainer,
   MeshRenderer,
+  Billboard,
+  BillboardMode,
   MeshCollider,
   Material,
   MaterialTransparencyMode,
@@ -128,6 +130,9 @@ import {
   PORTAL_RADIUS,
   PORTAL_HEIGHT_OFFSET,
   PORTAL_COLOR,
+  PORTAL_VORTEX_TEXTURE,
+  PORTAL_SPIN_SPEED,
+  PORTAL_DISC_SCALE,
   PORTAL_GLOW_INTENSITY,
   PORTAL_GLOW_RANGE,
   LAST_CANDLE_PREVIEW_SECONDS,
@@ -138,12 +143,21 @@ import {
   LAST_CANDLE_PREVIEW_MIN_DIST,
   LAST_CANDLE_PREVIEW_TURN_DEGREES,
   SPAWN_POSITION,
-  SPAWN_ROTATION
+  SPAWN_ROTATION,
+  VICTORY_CINEMATIC_HOLD_SECONDS
 } from './config'
-import { gameStarted, isPlayerDead, onPlayerDeath, setQuestInvulnerable, grantSpawnGrace, setCameraLockInvulnerable } from './gameState'
+import { gameStarted, isPlayerDead, onPlayerDeath, setQuestInvulnerable, grantSpawnGrace, setCameraLockInvulnerable,
+  lastDeathCause
+} from './gameState'
 import { playerPosition } from './playerTracker'
 import { knifeCollected } from './quest'
+import { clearDeathReplay, deathCamActive } from './effects/deathCam'
 import { playSoundAt, SOUND_CANDLE_LIGHT, SOUND_CANDLE_LIGHTING_START, SOUND_PORTAL_APPEAR, SOUND_VICTORY } from './sounds'
+import {
+  startVictoryCinematic,
+  endVictoryCinematic,
+  victoryCinematicHolding
+} from './effects/victoryCinematic'
 import {
   updateMyBestTime,
   readRemoteStats,
@@ -154,6 +168,7 @@ import {
   setMyStationsForRound,
   myOffsetBucketIndex
 } from './multiplayer'
+import { persistedScores, recordDeath, submitScore } from './scores'
 import { setSkeletonsForRound } from './enemies/skeletons'
 import { pushToast } from './notifications'
 import { getPlayer } from '@dcl/sdk/players'
@@ -183,10 +198,65 @@ export let hearts = ROUND_HEARTS
 export let candlesLit = 0
 export let roundRemaining = ROUND_SECONDS
 export let roundDeaths = 0
+
+/**
+ * THE DEATH RECAP — one entry per death this round, in the order they happened.
+ *
+ * The defeat screen used to name only the LAST death (defeatSubline), so a run
+ * that ended three hearts down told you about one of them. Which trap kept
+ * getting you is exactly the thing a player needs to know to do better next
+ * time, and it is the one thing the game never said.
+ *
+ * Recorded here rather than in the UI because gameLoop already owns the round
+ * clock and the area tracking, and a recap without WHEN and WHERE is just the
+ * same sentence three times.
+ */
+export interface DeathRecord {
+  /** As passed to killPlayer(), e.g. 'Killed by the swinging axe'. */
+  cause: string
+  /** Seconds remaining on the round clock at the moment it happened. */
+  atRemaining: number
+  /** How far in you had got, by the same labels the defeat line uses. */
+  area: string
+}
+export const deathLog: DeathRecord[] = []
 export let lastWinSeconds = 0 // how long the winning ritual took
 export let lastWinWasBest = false // did the latest win beat the previous personal best?
 export let lastWinDelta = 0 // latest win time minus previous best (negative = faster); 0 on first win
 export const bestWinTimes: number[] = [] // fastest rituals, ascending, top 5
+/**
+ * Hearts left on the run that set bestWinTimes[0] — NOT the most hearts ever.
+ * Kept in step with that one entry so a board row always describes one escape.
+ * -1 until a first win, matching the "not recorded" convention in scores.ts.
+ */
+export let bestWinHearts = -1
+/**
+ * Is the full win screen being held back for the victory cinematic?
+ *
+ * OWNED HERE RATHER THAN READ STRAIGHT OFF victoryCinematicHolding, because
+ * this one flag decides two things that must never disagree: whether ui.tsx
+ * draws the win overlay, and whether the reset countdown below is ticking. If
+ * the UI held and the clock ran, the round would reset behind a screen the
+ * player never saw.
+ *
+ * It also carries a DEAD MAN'S SWITCH. addSafeSystem contains a throwing
+ * system by swallowing its error and calling it again next frame (see
+ * safeSystem.ts) — so a victoryCinematic that starts and then throws every
+ * frame would leave victoryCinematicHolding stuck true forever, with no win
+ * screen, no countdown and no way to start another round. Holding on OUR OWN
+ * clock instead means the worst that failure can do is cost the player a shot
+ * they were going to see anyway.
+ */
+export let winScreenHeld = false
+let winHoldSeconds = 0
+/**
+ * How long past the cinematic's own hold this will keep waiting before it stops
+ * believing it. Four seconds is far longer than any legitimate overshoot (the
+ * hold is a fixed timer, not a wait on anything) and far shorter than a player
+ * would sit staring at a frozen screen.
+ */
+const WIN_HOLD_CEILING = VICTORY_CINEMATIC_HOLD_SECONDS + 4
+
 export let portalReady = false
 export let portalOpenSeconds = 0
 let roundNumber = 1 // 1 = first round (5 candles), 2+ = standard (7 candles)
@@ -194,23 +264,75 @@ let roundNumber = 1 // 1 = first round (5 candles), 2+ = standard (7 candles)
 export interface RankEntry {
   name: string
   bestTime: number
+  /** Hearts left on the run that set bestTime. -1 = not recorded. */
+  hearts: number
   me: boolean
 }
 
 /**
- * Fastest valid escape times, ranked across every player in the scene.
+ * Fastest valid escape times, ranked across every player who has ever escaped.
  *
- * This is THE competitive score. My best comes from bestWinTimes[0]; every
- * other player's from their synced bestTime (0 = never escaped, excluded).
- * Used by the win overlay in ui.tsx.
+ * This is THE competitive score, and it is fed from THREE places now, in
+ * descending order of durability:
+ *
+ *   1. persistedScores() — the all-time board, read back from the database in
+ *      scores.ts. This is the only source that survives everyone leaving the
+ *      scene; before it existed the board reset itself every time the room
+ *      went cold, which is the whole bug this merge exists to fix.
+ *   2. bestWinTimes[0] — my best THIS SESSION. Kept as a source even though a
+ *      submitted run also lands in (1), because the submit is asynchronous and
+ *      guests never submit at all: without this, your own record would vanish
+ *      off the board for the seconds between escaping and the round trip
+ *      landing, which reads as the game losing your run.
+ *   3. readRemoteStats() — everyone standing here right now, over syncEntity.
+ *      Live but session-scoped; a stranger's record shows up the instant they
+ *      set it rather than at the next 90-second refresh.
+ *
+ * DEDUPED BY NAME, not by address. The persisted rows carry an address and the
+ * live ones cannot — PlayerStats is a synced component, not a player entity,
+ * so there is no address on it to match against. Names are what the board
+ * draws anyway, so a collision here shows the same text twice with one time
+ * rather than something wrong. The database keys on address regardless, so the
+ * stored data never duplicates; this is only about what one client renders.
+ *
+ * Used by the win overlay in ui.tsx and the physical board in leaderboard.ts.
  */
 export function escapeRanking(): RankEntry[] {
-  const myName = getPlayer()?.name ?? 'You'
-  const ranking: RankEntry[] = []
-  if (bestWinTimes.length > 0) ranking.push({ name: myName, bestTime: bestWinTimes[0], me: true })
-  for (const o of readRemoteStats()) {
-    if (o.bestTime > 0) ranking.push({ name: o.name, bestTime: o.bestTime, me: false })
+  const player = getPlayer()
+  const myName = player?.name ?? 'You'
+  const myAddress = (player?.userId ?? '').toLowerCase()
+
+  const byName = new Map<string, RankEntry>()
+
+  /** Fold one time in, keeping the fastest and never downgrading a `me` flag. */
+  function add(name: string, bestTime: number, hearts: number, mine: boolean): void {
+    if (bestTime <= 0) return
+    const key = name.toLowerCase()
+    const prev = byName.get(key)
+    if (prev === undefined) {
+      byName.set(key, { name, bestTime, hearts, me: mine })
+      return
+    }
+    // Hearts travel WITH the time they belong to — replaced together or not at
+    // all, so a row never mixes two runs.
+    if (bestTime < prev.bestTime) {
+      prev.bestTime = bestTime
+      prev.hearts = hearts
+    }
+    prev.me = prev.me || mine
   }
+
+  for (const s of persistedScores()) {
+    add(s.name, s.bestTime, s.hearts, myAddress !== '' && s.address === myAddress)
+  }
+  if (bestWinTimes.length > 0) add(myName, bestWinTimes[0], bestWinHearts, true)
+  // PlayerStats carries no hearts, so a player visible only as a live in-room
+  // peer reports them as unrecorded rather than inventing a number. In practice
+  // they are almost always in the persisted list too, which does carry hearts.
+  for (const o of readRemoteStats()) add(o.name, o.bestTime, -1, false)
+
+  const ranking: RankEntry[] = []
+  byName.forEach((entry) => ranking.push(entry))
   ranking.sort((a, b) => a.bestTime - b.bestTime)
   return ranking
 }
@@ -765,7 +887,14 @@ let stuckTimer = 0
  * candles still standing, not just the final one.
  */
 function stuckHintSystem(dt: number) {
-  if (!gameStarted || roundPhase !== 'playing' || isPlayerDead || portalReady) {
+  // deathCamActive is in here for the same reason isPlayerDead is: the camera
+  // is not the player's right now. The death recap can be opened from the HUD
+  // chip AFTER respawning, so a live, un-stuck player can be watching a replay
+  // when this timer matures — and a preview cutting in on top would steal that
+  // shot and then lose its own camera-lock invulnerability the moment the
+  // replay ended (both share the one flag). Resetting the timer rather than
+  // just skipping also means the minute starts over once the recap is done.
+  if (!gameStarted || roundPhase !== 'playing' || isPlayerDead || portalReady || deathCamActive) {
     stuckTimer = 0
     return
   }
@@ -1027,8 +1156,12 @@ interface Portal {
   root: Entity
   glow: Entity
   hitbox: Entity
+  /** The spinning vortex plane. Child of a billboard, so it can rotate. */
+  disc: Entity
 }
 let portal: Portal | null = null
+/** Accumulated spin, degrees. Kept here so a round reset starts it over. */
+let portalSpin = 0
 let portalPosition: Vector3 | null = null // where the portal opened (for the walk-through win)
 
 function unlockPortal() {
@@ -1058,15 +1191,32 @@ function unlockPortal() {
     position: Vector3.create(PORTAL_POSITION.x, PORTAL_POSITION.y + PORTAL_HEIGHT_OFFSET, PORTAL_POSITION.z),
     scale: Vector3.create(PORTAL_RADIUS * 2, PORTAL_RADIUS * 2, PORTAL_RADIUS * 2)
   })
-  MeshRenderer.setSphere(root)
-  Material.setPbrMaterial(root, {
-    albedoColor: Color4.create(PORTAL_COLOR.r, PORTAL_COLOR.g, PORTAL_COLOR.b, 0.85),
-    emissiveColor: Color4.create(PORTAL_COLOR.r, PORTAL_COLOR.g, PORTAL_COLOR.b, 1),
-    emissiveIntensity: 2.6,
-    transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
-    metallic: 0,
-    roughness: 0.2
+  // THE VORTEX. Billboard on the ROOT so the disc always faces the player, and
+  // the spinning plane as its CHILD — a Billboard overrides its own entity's
+  // rotation, so anything that needs to spin has to live underneath it.
+  Billboard.create(root, { billboardMode: BillboardMode.BM_Y })
+
+  const disc = engine.addEntity()
+  Transform.create(disc, {
+    scale: Vector3.create(PORTAL_DISC_SCALE, PORTAL_DISC_SCALE, PORTAL_DISC_SCALE),
+    parent: root
   })
+  MeshRenderer.setPlane(disc)
+  Material.setPbrMaterial(disc, {
+    texture: Material.Texture.Common({ src: PORTAL_VORTEX_TEXTURE }),
+    // Emissive from the same texture: the arms and the hot core glow on their
+    // own rather than being lit by whatever happens to be nearby, which in a
+    // back yard at night is nothing.
+    emissiveTexture: Material.Texture.Common({ src: PORTAL_VORTEX_TEXTURE }),
+    emissiveColor: Color4.create(1, 1, 1, 1),
+    emissiveIntensity: 2.2,
+    albedoColor: Color4.create(1, 1, 1, 1),
+    transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
+    specularIntensity: 0,
+    metallic: 0,
+    roughness: 1
+  })
+  portalSpin = 0
 
   const glow = engine.addEntity()
   Transform.create(glow, { parent: root })
@@ -1093,7 +1243,7 @@ function unlockPortal() {
     }
   )
 
-  portal = { root, glow, hitbox }
+  portal = { root, glow, hitbox, disc }
 }
 
 function removePortal() {
@@ -1101,6 +1251,7 @@ function removePortal() {
     pointerEventsSystem.removeOnPointerDown(portal.hitbox)
     engine.removeEntity(portal.hitbox)
     engine.removeEntity(portal.glow)
+    engine.removeEntity(portal.disc)
     engine.removeEntity(portal.root)
     portal = null
   }
@@ -1119,13 +1270,38 @@ function win() {
   const priorBest = bestWinTimes.length > 0 ? bestWinTimes[0] : null
   lastWinWasBest = priorBest === null || lastWinSeconds < priorBest
   lastWinDelta = priorBest === null ? 0 : lastWinSeconds - priorBest
+  // Only when this run actually IS the new best, so hearts never drift onto a
+  // time from a different escape.
+  if (lastWinWasBest) bestWinHearts = hearts
   bestWinTimes.push(lastWinSeconds)
   bestWinTimes.sort((a, b) => a - b)
   if (bestWinTimes.length > 5) bestWinTimes.length = 5
-  updateMyBestTime(bestWinTimes[0]) // share my fastest escape so every board can rank it
+  updateMyBestTime(bestWinTimes[0]) // share my fastest escape with everyone in the room right now
+  // THIS RUN's time and hearts, not the best-ever time. Sending bestWinTimes[0]
+  // (as this did) would pair a previous run's time with this run's hearts and
+  // put a combination on the board that never happened. The server keeps
+  // whichever is faster, so there is nothing lost by reporting honestly.
+  submitScore(lastWinSeconds, hearts)
   phaseCountdown = WIN_RESET_SECONDS
   setQuestInvulnerable(true) // nothing can kill you mid-celebration
   playSoundAt(SOUND_VICTORY, playerPosition, 1, 1, true) // global — a win should be heard scene-wide, not just up close
+  // THE ONLY PLACE THE CELEBRATION IS EVER STARTED, and win() has exactly one
+  // caller — the portal, by tap or by walking into it. Wiring it here rather
+  // than at either of those two call sites is what makes "it only plays after
+  // you got in the portal" a property of the code instead of a promise.
+  //
+  // LAST, after the score is banked and submitted: the cinematic takes the
+  // camera and the body for the next several seconds, and none of the bookkeeping
+  // above should be sitting behind a shot. It is also self-guarding (disabled
+  // flag, un-ready init, already-running), so a scene where it failed to
+  // initialise still wins rounds exactly as it did before.
+  winHoldSeconds = 0
+  startVictoryCinematic()
+  // Read back rather than assumed: startVictoryCinematic declines silently if
+  // the feature is off or its init never completed, and in that case the win
+  // screen must come up immediately, exactly as it did before any of this
+  // existed.
+  winScreenHeld = victoryCinematicHolding
 }
 
 function defeat(reason: 'hearts' | 'time') {
@@ -1175,11 +1351,20 @@ function resetRound() {
     }
   }
   removePortal()
+  // Strike the celebration set BEFORE the teleport below: it deletes the pile
+  // and hands the camera back, and the player is standing on top of that pile.
+  // Unconditional and self-guarding, so it also covers "Play Again" pressed
+  // mid-shot and a round that was never won at all.
+  endVictoryCinematic()
+  winScreenHeld = false
+  winHoldSeconds = 0
   assignRitualCandles() // a fresh random subset every run — also snuffs all of my own candles, for every viewer
   candlesLit = 0
   hearts = ROUND_HEARTS
   roundRemaining = ROUND_SECONDS
   roundDeaths = 0
+  deathLog.length = 0
+  clearDeathReplay() // a new round must not replay last round's death
   furthestArea = 0
   roundPhase = 'playing'
   setQuestInvulnerable(false)
@@ -1219,8 +1404,30 @@ function loopSystem(dt: number) {
 
   // win/defeat screen counts down, then the next round starts itself
   if (roundPhase !== 'playing') {
-    phaseCountdown -= dt
-    if (phaseCountdown <= 0) resetRound()
+    // THE CLOCK STOPS WHILE YOU ARE WATCHING THE REPLAY.
+    //
+    // The recap is most worth watching after the death that ended the run, and
+    // that is exactly when a countdown is running underneath it. Left ticking,
+    // the round would reset out from under the shot - the replay would be cut
+    // off mid-swing and the screen would jump to a fresh round. Holding it is
+    // free: the replay ends itself (deathCam's own tail), and the round reset
+    // calls clearDeathReplay() anyway, so this cannot deadlock.
+    //
+    // AND WHILE THE WIN CINEMATIC IS STILL HOLDING THE SCREEN, for the same
+    // reason: the win overlay is suppressed for that window (ui.tsx), so a
+    // countdown running underneath it would be counting down a screen nobody
+    // can see, and could reset the round out from under the shot. The hold
+    // ends before the camera move does — see VICTORY_CINEMATIC_HOLD_SECONDS —
+    // so the last seconds of the arc play under the win screen with the
+    // countdown running normally.
+    if (winScreenHeld) {
+      winHoldSeconds += dt
+      if (!victoryCinematicHolding || winHoldSeconds >= WIN_HOLD_CEILING) winScreenHeld = false
+    }
+    if (!deathCamActive && !winScreenHeld) {
+      phaseCountdown -= dt
+      if (phaseCountdown <= 0) resetRound()
+    }
     return
   }
 
@@ -1273,6 +1480,12 @@ function loopSystem(dt: number) {
   // visuals fail to spawn the walk-through check below still works.
   if (portalReady) {
     portalOpenSeconds += dt
+    // SWIRL. Advanced by dt rather than set from portalOpenSeconds so the spin
+    // stays smooth if the clock is ever paused or reset under it.
+    if (portal !== null) {
+      portalSpin = (portalSpin + PORTAL_SPIN_SPEED * dt) % 360
+      Transform.getMutable(portal.disc).rotation = Quaternion.fromEulerDegrees(0, 0, portalSpin)
+    }
     // Walk-through win: stand in the portal to escape — no tap needed (mobile
     // can't tap the 3D portal). Tapping it still works, gated by the same
     // PORTAL_ENTRY_DELAY_SECONDS — on request, neither path can enter until the
@@ -1314,6 +1527,14 @@ export function initGameLoop() {
   onPlayerDeath(() => {
     if (roundPhase !== 'playing') return
     roundDeaths += 1
+    // Counted on the same guard as roundDeaths, deliberately: deaths during a
+    // win/defeat screen are not part of a run and must not pad the tally.
+    recordDeath()
+    deathLog.push({
+      cause: lastDeathCause,
+      atRemaining: roundRemaining,
+      area: furthestAreaLabel()
+    })
     // clamped at 0 — once the portal is up (see defeat()'s guard) dying more
     // is harmless, but hearts shouldn't visibly drift negative on the HUD
     hearts = Math.max(0, hearts - 1)

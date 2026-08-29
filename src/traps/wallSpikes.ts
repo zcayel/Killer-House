@@ -43,6 +43,7 @@ import { boxHitsPlayer } from '../hits'
 import { volumeBox, endVolumes, VOLUME_COLOURS } from '../debug/killVolumes'
 import { playSoundAt, SOUND_SPIKE } from '../sounds'
 import { addSafeSystem } from '../safeSystem'
+import { registerReplayActor, recordHazardEvent } from '../effects/replayStage'
 
 type UnitState = 'hidden' | 'warning' | 'out' | 'retracting' | 'cooldown'
 
@@ -84,9 +85,43 @@ interface SpikeUnit {
   state: UnitState
   timer: number
   travel: number // 0 = fully hidden, 1 = fully extended
+  /** This unit's death-replay cue key, stamped on by addUnit(). */
+  key: string
 }
 
 const units: SpikeUnit[] = []
+
+/**
+ * Take a built unit into play and give the death replay its handle on it.
+ *
+ * Both sources of units (WALL_SPIKE_UNITS, spawned below, and the fences
+ * adopted out of Creator Hub) come through here so neither can be added
+ * without a cue key — a spike the recap cannot fire is a spike that kills the
+ * ghost off-screen.
+ */
+function addUnit(unit: SpikeUnit): void {
+  unit.key = `spike:${units.length}`
+  units.push(unit)
+  registerReplayActor(unit.key, {
+    reset: () => restSpike(unit),
+    fire: () => fire(unit)
+  })
+}
+
+/**
+ * Back into the wall, from anywhere in the cycle, glow off.
+ *
+ * The replay calls this before it opens and again when it closes. Opened off
+ * the death screen the spikes that killed you are still standing out of the
+ * wall; and a thrust the RECAP started must not be left out there as a live
+ * hazard once the camera hands back, in a hallway the player never walked into.
+ */
+function restSpike(unit: SpikeUnit): void {
+  unit.state = 'hidden'
+  unit.timer = 0
+  setGlow(unit, 0)
+  setTravel(unit, 0)
+}
 
 /** Red telegraph strip + its light. Shared by spawned and adopted units. */
 function buildTelegraph(at: Vector3, scale: Vector3, rotation: Quaternion | null) {
@@ -159,7 +194,8 @@ function buildUnit(hidden: Vector3, extended: Vector3, rotation: Vector3): Spike
     glowLight,
     state: 'hidden',
     timer: 0,
-    travel: 0
+    travel: 0,
+    key: '' // stamped by addUnit(), which is the only way in
   }
 }
 
@@ -332,7 +368,7 @@ function adoptPlaced(name: string): boolean {
   // could. It also fired on every Creator Hub rebuild, so the useful signal
   // (the failure warning below) was buried in repeats of the same two lines.
 
-  units.push({
+  addUnit({
     hidden,
     extended,
     strike: Vector3.create(
@@ -348,7 +384,8 @@ function adoptPlaced(name: string): boolean {
     glowLight,
     state: 'hidden',
     timer: 0,
-    travel: 0
+    travel: 0,
+    key: ''
   })
   return true
 }
@@ -438,13 +475,24 @@ function nearStrikePoint(pos: Vector3, unit: SpikeUnit): boolean {
   )
 }
 
-/** Start the telegraph → thrust sequence. Runs identically for a local trigger or a remote one. */
+/**
+ * Start the telegraph → thrust sequence. Runs identically for a local trigger
+ * or a remote one — and for the death replay, which fires this exact function
+ * off the recorded cue so the spikes in the recap are the spikes that got you.
+ *
+ * Everything after this point runs off unit.timer at fixed durations, so one
+ * call reproduces the whole sequence: the same telegraph, the same 0.12s
+ * thrust, the same hold. There is nothing else to record.
+ */
 function fire(unit: SpikeUnit) {
   unit.state = 'warning'
   unit.timer = WALL_SPIKE_WARNING_SECONDS
   setGlow(unit, 2)
   setTravel(unit, WARNING_PEEK)
   playSoundAt(SOUND_SPIKE, unit.strike, 0.9)
+  // Ignored while dead or replaying, so the recap's own thrust is not recorded
+  // into the next recap (see recordHazardEvent).
+  recordHazardEvent(unit.key)
 }
 
 function spikesSystem(dt: number) {
@@ -558,7 +606,7 @@ export function initWallSpikes() {
     // Per-client (same as the skeletons): NOT synced — every client runs its
     // own spike cycle and its own kill check, so the hazard works identically
     // on every device instead of depending on the host's Transform arriving.
-    units.push(unit)
+    addUnit(unit)
   }
 
   for (const name of WALL_SPIKE_PLACED_NAMES) pendingPlaced.push(name)

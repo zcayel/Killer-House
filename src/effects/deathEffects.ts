@@ -1,34 +1,31 @@
 /**
- * DEATH EFFECTS — camera shake + bloodstains.
+ * DEATH EFFECTS — bloodstains, tombstones and the electrocution flash.
  *
- * On every death:
- *  - The camera snaps to a virtual camera and shakes violently for a beat
- *    (amplitude decays to zero), then control returns to the normal camera
- *    while the death screen plays out.
- *  - A blood pool decal is stamped on the floor where you died — on the
- *    floor PLANE beneath the death, not at the height the player died at, so
- *    dying on the chandelier or mid-jump doesn't leave one hanging in the
- *    air (see floorBeneath). Stains are local to you, persist across
- *    respawns as "you died here" markers, and the oldest is removed once
- *    there are more than BLOOD_MAX_STAINS.
+ * On every death a blood pool decal is stamped on the floor where you died —
+ * on the floor PLANE beneath the death, not at the height the player died at,
+ * so dying on the chandelier or mid-jump doesn't leave one hanging in the air
+ * (see floorBeneath). Stains are local to you, persist across respawns as "you
+ * died here" markers, and the oldest is removed past BLOOD_MAX_STAINS.
  *
- * The shake camera is NOT parented to the player and carries no fixed
- * head-height/facing assumption — cameraShake() snapshots wherever the
- * player's REAL camera actually is the instant it's called (1st or 3rd
- * person, looking any direction) and jitters around that exact pose. It used
- * to be a fixed rig at head height inheriting the avatar's body rotation,
- * which is very often NOT the direction the player is actually looking (a
- * lightning strike could visibly snap the view to face the avatar's body,
- * and jump position if the player was in third person) — reported as "why
- * does it 180 turn / zoom" for the thunder shake specifically.
+ * THE CAMERA SHAKE LIVES IN effects/cameraShake.ts, not here.
+ *
+ * The version that used to be in this file snapshotted the camera's WORLD
+ * position and held it for the duration, then tried to detect a head-anchored
+ * third-person report using CameraMode — a renderer-written component that can
+ * be absent, in which case the correction never ran and the view snapped into
+ * the avatar's skull. That snap is what "the camera zooms in" was, through four
+ * attempts to fix it from the motion side.
+ *
+ * The replacement keeps the camera glued to the player instead: it captures the
+ * camera-to-player OFFSET and re-applies it to the live player position every
+ * frame, so whatever the client reports is preserved exactly and there is
+ * nothing to detect. Ported from New Scene 39, where it is known to work.
  */
 
 import {
   engine,
   Transform,
   MainCamera,
-  CameraMode,
-  VirtualCamera,
   MeshRenderer,
   MeshCollider,
   ColliderLayer,
@@ -42,6 +39,7 @@ import {
   BillboardMode,
   AvatarModifierArea,
   AvatarModifierType,
+  VisibilityComponent,
   Schemas,
   Entity
 } from '@dcl/sdk/ecs'
@@ -49,15 +47,14 @@ import { Vector3, Quaternion, Color4 } from '@dcl/sdk/math'
 import { syncEntity } from '@dcl/sdk/network'
 import { getPlayer } from '@dcl/sdk/players'
 import {
-  DEATH_SHAKE_SECONDS,
-  DEATH_SHAKE_AMPLITUDE,
   BLOOD_POOL_TEXTURE,
   ELECTROCUTION_TEXTURE,
   ELECTROCUTION_SECONDS,
   ELECTROCUTION_BURST_SIZE,
   ELECTROCUTION_CAUSE,
-  MODEL_SKELETON,
-  SKELETON_SCALE,
+  ELECTROCUTION_STONE_AT,
+  ELECTROCUTION_SKELETON_TEXTURE,
+  ELECTROCUTION_SKELETON_HEIGHT,
   BLOOD_POOL_TEXTURES,
   BLOOD_MAX_STAINS,
   TOMBSTONE_MODELS,
@@ -65,24 +62,19 @@ import {
   HOUSE_RECT,
   FLOOR_LEVELS_Y,
   FLOOR_SNAP_TOLERANCE,
-  YARD_FLOOR_Y
+  YARD_FLOOR_Y,
+  QUAKE_AMPLITUDE
 } from '../config'
 import { onPlayerDeath, isPlayerDead } from '../gameState'
 import { playerPosition } from '../playerTracker'
 import { otherPlayerIds } from '../multiplayer'
 import { onRoundReset } from '../gameLoop'
 import { addSafeSystem, reportFailure } from '../safeSystem'
+import { deathCamActive, setReplayStoneModel } from './deathCam'
+import { shakeCamera } from './cameraShake'
+import { startQuake } from './quake'
 
 const stains: Entity[] = []
-let shakeCam: Entity
-let shakeTimer = 0
-// The real camera's pose at the instant cameraShake() was called — the
-// shake jitters around this, not around a fixed rig position.
-let shakeBasePos = Vector3.create(0, 0, 0)
-let shakeBaseRot = Quaternion.Identity()
-// Where the PLAYER was when the shake started. The rig follows their
-// translation from here — see the note in shakeSystem on why it must.
-let shakeStartPlayer = Vector3.create(0, 0, 0)
 
 // While dead, the avatar is hidden and a tombstone stands where you fell.
 // The hide-avatars area is created ONCE and never deleted - deleting the
@@ -216,6 +208,48 @@ function refreshTombstoneHover(entity: Entity, name: string, cause: string, died
   }
 }
 
+// ── THE GRAVES STEP OUT OF THE RECAP ────────────────────────────────────────
+//
+// A death raises its headstone the instant it happens, so by the time the death
+// replay is watched — off the death screen, or off the HUD chip after
+// respawning — there is already a stone standing on the spot the ghost is
+// walking toward, in shot for the whole run-up. The replay is a recording of
+// you ALIVE. A grave that exists only because of the ending has no business
+// being in the opening, and the recap raises its own stone on the frame the
+// ghost is hit (raiseReplayStone, deathCam.ts) which is the only part of the
+// shot it belongs in.
+//
+// So every grave in the scene goes out for the length of the shot — not just
+// this death's, since an earlier one from the same round is just as much a prop
+// from the future as far as the recording is concerned.
+//
+// HIDDEN LOCALLY, and that is the whole reason this is safe. These are synced
+// entities, but only the components named in their syncEntity() call are
+// replicated (Transform, GltfContainer, TombstoneInfo). VisibilityComponent is
+// not one of them, so nobody else's graves so much as flicker.
+let gravesHidden = false
+
+/**
+ * Show or hide one grave, hover card included.
+ *
+ * The hitbox needs its own handling twice over: it is a separate entity (a
+ * child, and VisibilityComponent does not inherit), and hiding a collider does
+ * not disable it — an invisible one would still hand out a "died 12s ago" card
+ * in the middle of the recap. CL_NONE is the off switch.
+ */
+function setGraveVisible(grave: Entity, visible: boolean) {
+  VisibilityComponent.createOrReplace(grave, { visible })
+  const hitbox = tombstoneHitboxes.get(grave)
+  if (hitbox !== undefined) {
+    MeshCollider.setBox(hitbox, visible ? ColliderLayer.CL_POINTER : ColliderLayer.CL_NONE)
+  }
+}
+
+function setGravesHidden(hidden: boolean) {
+  gravesHidden = hidden
+  for (const [grave] of engine.getEntitiesWith(TombstoneInfo)) setGraveVisible(grave, !hidden)
+}
+
 /** Removes a grave and the local hover hitbox parented to it. */
 function removeTombstone(t: Entity) {
   const hitbox = tombstoneHitboxes.get(t)
@@ -244,12 +278,27 @@ function removeTombstone(t: Entity) {
  * offering hover text over an empty patch of floor.
  */
 function tombstoneSystem(dt: number) {
+  // Ahead of the throttle below, which only runs once a second — a beat timed
+  // to the tenth cannot be driven off a one-second tick.
+  if (pendingStone !== null) {
+    pendingStone.wait -= dt
+    if (pendingStone.wait <= 0) {
+      const p = pendingStone
+      pendingStone = null
+      raiseTombstone(p.pos, p.name, p.cause)
+    }
+  }
+
   hoverRefreshTimer -= dt
   if (hoverRefreshTimer > 0) return
   hoverRefreshTimer = 1
 
   for (const [entity, info] of engine.getEntitiesWith(TombstoneInfo)) {
     refreshTombstoneHover(entity, info.name, info.cause, info.diedAt)
+    // A grave that turned up mid-recap (another player just died out there), or
+    // whose hover hitbox was only built on this pass, has to arrive already
+    // hidden — the edge trigger in shakeSystem has been and gone.
+    if (gravesHidden) setGraveVisible(entity, false)
   }
 
   // Mine, expired.
@@ -309,7 +358,21 @@ export function spawnSyncedTombstone(pos: Vector3, name: string, cause: string):
   return e
 }
 
-function becomeTombstone(pos: Vector3, name: string, cause: string) {
+/**
+ * A headstone waiting on its cue. Lightning deaths hold theirs back a short
+ * beat (0.3s) so the strike registers before the stone lands — the X-ray sprite
+ * is still running underneath it, see ELECTROCUTION_STONE_AT.
+ * Null whenever nothing is pending.
+ */
+let pendingStone: { pos: Vector3; name: string; cause: string; wait: number } | null = null
+
+/**
+ * Raise the headstone. Split out of becomeTombstone so it can be DEFERRED
+ * without also deferring the body-hide — the avatar has to vanish on the frame
+ * you die whatever else is delayed, or the electrocution sprite plays over the
+ * top of your own still-standing body and the X-ray joke reads as a glitch.
+ */
+function raiseTombstone(pos: Vector3, name: string, cause: string) {
   // THE HEADSTONE IS BACK (on request). It was pulled at one point for getting
   // in the way where players died; it returns walk-through and floor-snapped
   // (see spawnSyncedTombstone), which is what that complaint was actually
@@ -319,7 +382,28 @@ function becomeTombstone(pos: Vector3, name: string, cause: string) {
   // reset. Deaths within a round deliberately accumulate: ROUND_HEARTS caps how
   // many can ever exist at once, and the row of them is a readable record of
   // where this run went wrong.
-  tombstones.push(spawnSyncedTombstone(pos, name, cause))
+  const grave = spawnSyncedTombstone(pos, name, cause)
+  tombstones.push(grave)
+  // TELL THE RECAP WHICH STONE THIS DEATH LEFT. The death replay raises its own
+  // local headstone on the frame the ghost is hit, and the models cycle — left
+  // to pick for itself it always chose the first one, so the stone that rose in
+  // the replay was usually not the stone standing outside it.
+  const gltf = GltfContainer.getOrNull(grave)
+  if (gltf !== null) setReplayStoneModel(gltf.src)
+}
+
+function becomeTombstone(pos: Vector3, name: string, cause: string) {
+  // Lightning holds the stone back a short beat; everything else raises it now.
+  if (cause === ELECTROCUTION_CAUSE) {
+    pendingStone = {
+      pos: Vector3.create(pos.x, pos.y, pos.z),
+      name,
+      cause,
+      wait: ELECTROCUTION_STONE_AT
+    }
+  } else {
+    raiseTombstone(pos, name, cause)
+  }
 
   // Move the hide-avatars zone onto the death spot AND switch its modifier
   // on. excludeIds (refreshed every 0.5s while dead) carries every other
@@ -329,7 +413,16 @@ function becomeTombstone(pos: Vector3, name: string, cause: string) {
   const t = Transform.getMutable(hideAvatarArea)
   t.parent = undefined
   t.position = Vector3.create(pos.x, pos.y, pos.z)
-  AvatarModifierArea.getMutable(hideAvatarArea).modifiers = [AvatarModifierType.AMT_HIDE_AVATARS]
+  // HOLD THE BODY WHILE THE DEATH CAM IS UP.
+  //
+  // Hiding the avatar the instant you die means the replay shows a trap
+  // swinging through empty air with a headstone next to it — the one thing the
+  // shot exists to show, your body being hit, is gone before the camera even
+  // cuts. The zone is positioned now (so it lands on the right spot) but the
+  // modifier is switched on by shakeSystem once the cam releases.
+  if (!deathCamActive) {
+    AvatarModifierArea.getMutable(hideAvatarArea).modifiers = [AvatarModifierType.AMT_HIDE_AVATARS]
+  }
   refreshExcludeIds() // exclude every current player immediately — only I should vanish
 }
 
@@ -345,6 +438,9 @@ function restoreAvatar() {
 
 /** Wipes every tombstone left from this round — called on round reset, not on individual respawn. */
 function clearTombstones() {
+  // Drop anything still waiting on its cue, or a stone from the round that just
+  // ended surfaces a second into the new one.
+  pendingStone = null
   for (const t of tombstones) removeTombstone(t)
   tombstones.length = 0
 }
@@ -396,14 +492,16 @@ let bloodDesign = 0
  * Two pieces, both billboarded so they face you however the camera was turned
  * at the moment of death:
  *   - the star burst, scaled up from nothing and faded out;
- *   - the skeleton model standing where you were, which is the joke — the
- *     lightning X-rays you.
+ *   - a flat skeleton cutout standing where you were, which is the joke — the
+ *     lightning X-rays you. A SPRITE, not the scene's skeleton .glb: a 0.9s
+ *     flash never needs a model that holds up from every angle, and the cutout
+ *     always presents the same readable pose.
  *
  * Local and unsynced, like the bloodstains: this is YOUR death, and a yard full
  * of other people's flashes would read as weather rather than as a mistake you
  * made.
  */
-const electros: { burst: Entity; bones: Entity; life: number }[] = []
+const electros: { burst: Entity; bones: Entity; base: Vector3; life: number }[] = []
 
 function spawnElectrocution(pos: Vector3) {
   const groundY = floorBeneath(pos)
@@ -428,23 +526,29 @@ function spawnElectrocution(pos: Vector3) {
     roughness: 1
   })
 
-  // The bones, standing in the burst. Slightly in front of the plane so the
-  // billboard cannot z-fight with it.
+  // The bones, standing in the burst. Same billboard, so it holds the pose
+  // whatever direction you were facing when it hit.
+  const base = Vector3.create(pos.x, groundY + ELECTROCUTION_SKELETON_HEIGHT * 0.5, pos.z)
   const bones = engine.addEntity()
   Transform.create(bones, {
-    position: Vector3.create(pos.x, groundY, pos.z),
-    scale: Vector3.create(SKELETON_SCALE, SKELETON_SCALE, SKELETON_SCALE)
+    position: base,
+    scale: Vector3.create(ELECTROCUTION_SKELETON_HEIGHT, ELECTROCUTION_SKELETON_HEIGHT, 1)
   })
   Billboard.create(bones, { billboardMode: BillboardMode.BM_Y })
-  GltfContainer.create(bones, {
-    src: MODEL_SKELETON,
-    // Never solid: this is a 0.9s visual on top of a corpse, and an invisible
-    // collider left in the yard would be a wall nobody can see.
-    visibleMeshesCollisionMask: ColliderLayer.CL_NONE,
-    invisibleMeshesCollisionMask: ColliderLayer.CL_NONE
+  Material.setPbrMaterial(bones, {
+    texture: Material.Texture.Common({ src: ELECTROCUTION_SKELETON_TEXTURE }),
+    emissiveTexture: Material.Texture.Common({ src: ELECTROCUTION_SKELETON_TEXTURE }),
+    // Hotter than the burst so the bones stay legible against its bright core.
+    emissiveColor: Color4.create(0.82, 0.93, 1, 1),
+    emissiveIntensity: 3.2,
+    transparencyMode: MaterialTransparencyMode.MTM_ALPHA_BLEND,
+    specularIntensity: 0,
+    metallic: 0,
+    roughness: 1
   })
+  MeshRenderer.setPlane(bones)
 
-  electros.push({ burst, bones, life: ELECTROCUTION_SECONDS })
+  electros.push({ burst, bones, base, life: ELECTROCUTION_SECONDS })
 }
 
 /** Grows the burst and clears both pieces when the flash is spent. */
@@ -463,6 +567,22 @@ function electrocutionSystem(dt: number) {
     const spread = ELECTROCUTION_BURST_SIZE * Math.min(1, t * 4.5)
     const tr = Transform.getMutable(e.burst)
     tr.scale = Vector3.create(spread, spread, spread)
+
+    // NUDGE THE BONES TOWARD THE CAMERA. Both planes are BM_Y billboards at the
+    // same spot, so they are exactly coplanar and z-fight — the skeleton
+    // flickers in and out of the burst. The 3D model this replaced had real
+    // depth and never needed it. Which way "toward the camera" points changes
+    // as the player turns, so it has to be recomputed rather than baked in.
+    if (Transform.has(engine.CameraEntity)) {
+      const c = Transform.get(engine.CameraEntity).position
+      const dx = c.x - e.base.x
+      const dz = c.z - e.base.z
+      const len = Math.hypot(dx, dz)
+      if (len > 0.001) {
+        const bt = Transform.getMutable(e.bones)
+        bt.position = Vector3.create(e.base.x + (dx / len) * 0.12, e.base.y, e.base.z + (dz / len) * 0.12)
+      }
+    }
   }
 }
 
@@ -503,89 +623,27 @@ export function spawnBloodStain(pos: Vector3) {
   }
 }
 
-let shakeDuration = DEATH_SHAKE_SECONDS
-let shakeAmp = DEATH_SHAKE_AMPLITUDE
-let shakeNatural = false // false = violent random jitter (death), true = smooth rumble (thunder)
-let shakePhase = 0
-
-// CameraType is a `const enum` inside the SDK's generated protobuf types and is
-// NOT re-exported from '@dcl/sdk/ecs', so the wire value is written out here.
-// CT_FIRST_PERSON = 0, CT_THIRD_PERSON = 1, CT_CINEMATIC = 2.
-const CAMERA_TYPE_THIRD_PERSON = 1
-// How far behind the reported camera the rig sits when the pull-back below
-// kicks in. The explorer's own third-person orbit is roughly this far back.
-const THIRD_PERSON_PULLBACK = 4.0
-// Horizontal distance under which the reported camera counts as sitting ON the
-// avatar rather than orbiting behind it.
-const HEAD_ANCHOR_TOLERANCE = 0.8
-
-/**
- * Shake the camera. natural=true gives the storm's two-axis rumble (lightning,
- * impacts); natural=false is the violent death jitter.
- *
- * Snapshots the REAL camera's current position+rotation first and hands the
- * shake rig that exact pose before swapping to it, so the swap is visually
- * seamless — whatever the player was looking at is still what they're
- * looking at, just jittering, instead of snapping to a fixed head-height rig
- * facing the avatar's body.
- *
- * THE THIRD-PERSON PULL-BACK. This is the fix for the repeatedly-reported
- * "camera zooms to first person when it shakes".
- *
- * The rig renders from wherever we put it, and we put it wherever
- * engine.CameraEntity says the camera is. In THIRD person that report comes
- * back anchored to the avatar's head rather than out at the orbit position, so
- * handing it straight to the rig teleports the view from behind the avatar into
- * its skull — which is exactly what a zoom to first person looks like.
- *
- * Detected rather than assumed, so this can only ever fire on the broken case:
- * CameraMode has to say third person AND the reported camera has to be sitting
- * on top of the player. If a client reports the orbit position properly, the
- * distance test fails and the pose is used untouched. Pushing back along the
- * camera's own -forward keeps the view direction identical and only restores
- * the distance, which is the single thing that was lost.
- */
-export function cameraShake(seconds: number, amplitude: number, natural = false) {
-  shakeTimer = seconds
-  shakeDuration = seconds
-  shakeAmp = amplitude
-  shakeNatural = natural
-  shakePhase = 0
-
-  const cam = Transform.get(engine.CameraEntity)
-  shakeBaseRot = Quaternion.create(cam.rotation.x, cam.rotation.y, cam.rotation.z, cam.rotation.w)
-  shakeBasePos = Vector3.create(cam.position.x, cam.position.y, cam.position.z)
-
-  const mode = CameraMode.getOrNull(engine.CameraEntity)
-  const thirdPerson = mode !== null && (mode.mode as number) === CAMERA_TYPE_THIRD_PERSON
-  const headAnchored =
-    Math.hypot(shakeBasePos.x - playerPosition.x, shakeBasePos.z - playerPosition.z) < HEAD_ANCHOR_TOLERANCE
-  if (thirdPerson && headAnchored) {
-    const forward = Vector3.rotate(Vector3.Forward(), shakeBaseRot)
-    shakeBasePos = Vector3.create(
-      shakeBasePos.x - forward.x * THIRD_PERSON_PULLBACK,
-      shakeBasePos.y - forward.y * THIRD_PERSON_PULLBACK,
-      shakeBasePos.z - forward.z * THIRD_PERSON_PULLBACK
-    )
-  }
-
-  shakeStartPlayer = Vector3.create(playerPosition.x, playerPosition.y, playerPosition.z)
-  const t = Transform.getMutable(shakeCam)
-  t.position = shakeBasePos
-  t.rotation = shakeBaseRot
-
-  MainCamera.getOrCreateMutable(engine.CameraEntity).virtualCameraEntity = shakeCam
-}
-
-function startShake() {
-  cameraShake(DEATH_SHAKE_SECONDS, DEATH_SHAKE_AMPLITUDE, false)
-}
-
 function shakeSystem(dt: number) {
   // Respawn detection: the moment isPlayerDead flips back to false,
   // clear the tombstone and un-hide the avatar.
   if (wasDead && !isPlayerDead) restoreAvatar()
   wasDead = isPlayerDead
+
+  // Graves out for the length of the recap, back the moment it ends. Edge
+  // triggered, not every frame: these are component writes, and the set only
+  // changes when the shot opens or closes.
+  if (gravesHidden !== deathCamActive) setGravesHidden(deathCamActive)
+
+  // The death cam has released and the body is still showing — hide it now.
+  // See becomeTombstone: the zone is already parked on the death spot, this
+  // only flips the modifier that does the hiding.
+  if (isPlayerDead && !deathCamActive) {
+    const mod = AvatarModifierArea.getMutable(hideAvatarArea)
+    if (mod.modifiers.length === 0) {
+      mod.modifiers = [AvatarModifierType.AMT_HIDE_AVATARS]
+      refreshExcludeIds()
+    }
+  }
 
   if (isPlayerDead) {
     // THE ZONE FOLLOWS THE CORPSE. becomeTombstone drops it on the spot where
@@ -613,91 +671,9 @@ function shakeSystem(dt: number) {
     }
   }
 
-  if (shakeTimer <= 0) return
-  shakeTimer -= dt
-
-  if (shakeTimer <= 0) {
-    // Shake over - hand the camera back. No position reset needed: the rig
-    // is inactive and gets a fresh snapshot next time cameraShake() fires.
-    MainCamera.getOrCreateMutable(engine.CameraEntity).virtualCameraEntity = undefined
-    return
-  }
-
-  // THE RIG TRAVELS WITH THE PLAYER. This is the real cause of the "camera
-  // zooms when it shakes" report, and it was NOT the jitter axes.
-  //
-  // The pose is snapshotted once when the shake starts and held for the whole
-  // duration — 1.6s for thunder. A player walking during a strike therefore
-  // walks AWAY from their own camera, which stays nailed where they were: the
-  // world slides past and everything ahead appears to pull in. A dolly, read
-  // as a zoom.
-  //
-  // Tracking the player's own translation cancels it exactly. playerPosition
-  // comes from engine.PlayerEntity, NOT from CameraEntity, which matters:
-  // while the virtual camera is active the camera entity reports the rig's own
-  // pose, so following that would feed back into itself and drift.
-  const travel = Vector3.create(
-    playerPosition.x - shakeStartPlayer.x,
-    playerPosition.y - shakeStartPlayer.y,
-    playerPosition.z - shakeStartPlayer.z
-  )
-
-  // Strong at first, settling to nothing.
-  const amp = shakeAmp * (shakeTimer / shakeDuration)
-
-  // NO FORWARD COMPONENT — this is why the shake used to read as a zoom.
-  //
-  // The offset used to be built in WORLD axes, so whichever way the player
-  // happened to be facing, part of every shake ran along their view direction.
-  // A 0.45m lurch toward what you're looking at is a dolly, and it was
-  // reported as the camera zooming in.
-  //
-  // Building it from the camera's own RIGHT and UP instead confines the motion
-  // to the screen plane: the view can sway and heave, but the distance to
-  // everything in front of the player never changes.
-  const right = Vector3.rotate(Vector3.Right(), shakeBaseRot)
-  const up = Vector3.rotate(Vector3.Up(), shakeBaseRot)
-
-  let sway: number
-  let heave: number
-  if (shakeNatural) {
-    // SIDE TO SIDE, AND UP AND DOWN — two axes, one clean oscillation each (on
-    // request). This used to be two summed sines per axis, which is a smoother
-    // rumble but reads as formless shudder; a single frequency per axis is what
-    // makes the direction of the motion legible.
-    //
-    // The two rates are deliberately unrelated (≈4.1Hz lateral against ≈2.7Hz
-    // vertical) so they drift in and out of phase instead of tracing the same
-    // diagonal over and over, and the vertical is the shallower of the two —
-    // ground shock throws you sideways more than it lifts you.
-    shakePhase += dt
-    const p = shakePhase
-    sway = amp * Math.sin(p * 26)
-    heave = amp * 0.55 * Math.sin(p * 17)
-  } else {
-    sway = (Math.random() - 0.5) * 2 * amp
-    heave = (Math.random() - 0.5) * 2 * amp
-  }
-  const offset = Vector3.create(
-    right.x * sway + up.x * heave,
-    right.y * sway + up.y * heave,
-    right.z * sway + up.z * heave
-  )
-  const t = Transform.getMutable(shakeCam)
-  t.position = Vector3.add(Vector3.add(shakeBasePos, travel), offset)
-  t.rotation = shakeBaseRot
 }
 
 export function initDeathEffects() {
-  // Shake rig: unparented — cameraShake() poses it to match the real camera
-  // exactly at the moment each shake starts (see its own comment). Instant
-  // transition so the swap itself never adds a visible pan/zoom on top.
-  shakeCam = engine.addEntity()
-  Transform.create(shakeCam)
-  VirtualCamera.create(shakeCam, {
-    defaultTransition: { transitionMode: VirtualCamera.Transition.Time(0) }
-  })
-
   // Permanent hide-avatars zone, parked underground until a death snaps it
   // onto the player (see becomeTombstone/restoreAvatar). Created with NO
   // modifiers — inert until a death populates the list — because the mobile
@@ -741,7 +717,16 @@ export function initDeathEffects() {
       reportFailure('death:tombstone', err instanceof Error ? err.message : String(err))
     }
     try {
-      startShake()
+      // Full strength over 0.6s — the longest burst the fireball arena used,
+      // reserved there for its heaviest impact, and this is the equivalent:
+      // the hit that killed you. It overruns the 0.2s DEATH_SCREEN_DELAY_SECONDS
+      // by a wide margin, so the screen arrives while the shake is still
+      // settling — see that comment; it reads as one impact rather than two
+      // events. Still never covers the flash.
+      // Same fallback as the thunderclap: if the client's camera report cannot
+      // be trusted, shakeCamera declines rather than snap the view into the
+      // avatar, and the ground quake has to be the whole impact instead.
+      if (!shakeCamera(1.0, 0.6)) startQuake(0.7, QUAKE_AMPLITUDE * 3.2)
     } catch (err) {
       reportFailure('death:shake', err instanceof Error ? err.message : String(err))
     }

@@ -29,6 +29,11 @@ import ReactEcs, { ReactEcsRenderer, UiEntity, ScreenInsetArea } from '@dcl/sdk/
 import { Color4 } from '@dcl/sdk/math'
 import { isPlayerDead, lastDeathCause, respawnCountdown, respawnNow, gameStarted, startGame } from './gameState'
 import {
+  deathCamActive,
+  replayDeath,
+  canReplayDeath
+} from './effects/deathCam'
+import {
   roundPhase,
   defeatReason,
   phaseCountdown,
@@ -50,13 +55,18 @@ import {
   previewKind,
   escapeRanking,
   playAgainNow,
-  furthestAreaLabel
+  furthestAreaLabel,
+  deathLog,
+  winScreenHeld
 } from './gameLoop'
 import {
   BLOOD_OVERLAY_TEXTURE,
   KILLER_HOUSE_TITLE_TEXTURE,
   KILLER_HOUSE_TITLE_ASPECT,
   RESPAWN_DELAY_SECONDS,
+  DEATH_SCREEN_DELAY_SECONDS,
+  ELECTROCUTION_CAUSE,
+  ELECTROCUTION_SCREEN_AT,
   PORTAL_ENTRY_DELAY_SECONDS,
   ROUND_SECONDS,
   ROUND_HEARTS,
@@ -93,6 +103,7 @@ import {
   T_SMALL,
   T_BODY,
   T_CLOCK,
+  T_HEART,
   T_HEAD,
   T_SCORE,
   STRIP_HEIGHT,
@@ -236,10 +247,6 @@ function flameFlicker(): number {
   return 0.6 + 0.4 * ((w + 1) / 2)
 }
 
-function candlesRemaining(): number {
-  return Math.max(0, getCandlesRequired() - candlesLit)
-}
-
 // ── Copy ───────────────────────────────────────────────────────────────────
 // Written from the player's side of the screen: plain verbs, sentence case,
 // and never a claim the game does not actually know. The old copy asserted
@@ -251,12 +258,8 @@ function exitLine(): string {
   // left to show — the only number worth a player's attention here is how long
   // until they are allowed THROUGH it. After that it is an instruction, not a
   // readout, because nothing is running out.
-  if (portalReady) {
-    const arming = PORTAL_ENTRY_DELAY_SECONDS - portalOpenSeconds
-    return arming > 0 ? `EXIT OPENING · ${Math.ceil(arming)}s` : 'EXIT OPEN · GET TO THE BACKYARD'
-  }
-  const n = candlesRemaining()
-  return n === 1 ? 'SEALED · 1 candle left' : `SEALED · ${n} candles left`
+  const arming = PORTAL_ENTRY_DELAY_SECONDS - portalOpenSeconds
+  return arming > 0 ? `EXIT OPENING · ${Math.ceil(arming)}s` : 'EXIT OPEN · GET TO THE BACKYARD'
 }
 
 function winSubline(): string {
@@ -267,6 +270,95 @@ function winSubline(): string {
 
 function defeatHeadline(): string {
   return defeatReason === 'time' ? 'The clock ran out.' : 'You ran out of hearts.'
+}
+
+/**
+ * THE CELEBRATION CARD — the only thing on screen during the victory shot.
+ *
+ * The full win screen (scrim at 0.93, leaderboard, Play Again) is held back for
+ * VICTORY_CINEMATIC_HOLD_SECONDS so the cinematic is actually visible; a
+ * near-opaque overlay over a composed frame is the same as not having composed
+ * it. But a camera that cuts away from the player with NOTHING on screen reads
+ * as the game breaking rather than as a reward — the identical argument the
+ * DEATH RECAP banner further down is there to settle.
+ *
+ * So: two lines, pinned to the top out of the hero's third of the frame, no
+ * scrim, nothing to press. The time is the score and gets the size; everything
+ * else waits for the real screen, which arrives while the camera is still
+ * moving.
+ */
+function victoryCard() {
+  return (
+    <UiEntity uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', pointerFilter: 'none' }}>
+      <ScreenInsetArea uiTransform={{ flexDirection: 'column', alignItems: 'center' }}>
+        <UiEntity
+          uiTransform={{ width: '100%', height: px(T_MICRO * 2.2), margin: { top: px(28) } }}
+          uiText={{
+            value: 'ESCAPED IN',
+            fontSize: fs(T_MICRO),
+            font: FONT_DATA,
+            textAlign: 'middle-center',
+            color: ASH
+          }}
+        />
+        <UiEntity
+          uiTransform={{ width: '100%', height: px(T_SCORE * 1.1) }}
+          uiText={{
+            value: formatTime(lastWinSeconds),
+            fontSize: fs(T_SCORE * 0.8),
+            font: FONT_DATA,
+            textAlign: 'middle-center',
+            color: lastWinWasBest ? VEIL : WAX
+          }}
+        />
+      </ScreenInsetArea>
+    </UiEntity>
+  )
+}
+
+
+/**
+ * THE DEATH RECAP — every death this round, in order.
+ *
+ * The subline names only the death that ENDED the run; on a three-heart loss
+ * that is one death out of three, and the pattern is the useful part. "The axe
+ * got you twice" is a lesson; "you died" is not.
+ *
+ * Returns one string per death, already numbered and timestamped. Empty when
+ * the run ended on the clock without dying, which is a real outcome and should
+ * not render an empty box.
+ */
+function deathRecapLines(): string[] {
+  const out: string[] = []
+  for (let i = 0; i < deathLog.length; i++) {
+    const d = deathLog[i]
+    // Causes are authored as "Killed by ..." so they read as a death-screen
+    // headline. In a numbered list that repeats badly, so strip it.
+    const cause = d.cause.replace(/^Killed by /i, '').replace(/^Struck by /i, 'struck by ')
+    const named = cause !== '' ? cause : 'something in the dark'
+    out.push(`${i + 1}.  ${formatTime(d.atRemaining)}   ${named}  ·  ${d.area}`)
+  }
+  return out
+}
+
+/** "The swinging axe got you twice" — only when one cause actually repeats. */
+function deathRecapPattern(): string {
+  if (deathLog.length < 2) return ''
+  const counts = new Map<string, number>()
+  for (const d of deathLog) {
+    const c = d.cause.replace(/^Killed by /i, '')
+    counts.set(c, (counts.get(c) ?? 0) + 1)
+  }
+  let worst = ''
+  let n = 0
+  for (const [c, k] of counts) {
+    if (k > n) {
+      n = k
+      worst = c
+    }
+  }
+  if (n < 2 || worst === '') return ''
+  return `${worst} got you ${n === 2 ? 'twice' : `${n} times`}.`
 }
 
 function defeatSubline(): string {
@@ -288,8 +380,35 @@ function defeatSubline(): string {
 // 0 right after death (blood splat fully visible) -> 1 (solid black) about
 // two-thirds of the way through the respawn countdown.
 function fadeToBlackAlpha(): number {
-  const progress = 1 - respawnCountdown / RESPAWN_DELAY_SECONDS
+  // HOLD WHILE THE DEATH CAM IS UP. Otherwise the fade covers the very shot it
+  // was added to show — the trap finishing its swing through where you stood.
+  if (deathCamActive) return 0
+  // Rebased past the hold-off, so the fade starts from clear on the frame the
+  // screen appears. Measured from RESPAWN_DELAY_SECONDS it would already be
+  // part-way dark and pop in grey.
+  const span = RESPAWN_DELAY_SECONDS - deathScreenDelay()
+  const progress = 1 - respawnCountdown / span
   return Math.min(1, Math.max(0, progress * 1.5))
+}
+
+/**
+ * The death screen waits a beat before taking over.
+ *
+ * Without this the scrim lands on the same frame as the kill and swallows the
+ * death effect — the electrocution skeleton in particular, which is a 0.9s
+ * flash that nobody ever got to see. Driven off respawnCountdown rather than a
+ * clock of its own so there is only one death timer to keep in step, and so
+ * "Respawn Now" (which zeroes it) cannot strand the screen hidden.
+ */
+function deathScreenDelay(): number {
+  // Lightning runs a longer sequence — sprite, then headstone, then this — so
+  // it gets its own figure rather than sharing the default and cutting the
+  // last two beats off. See ELECTROCUTION_SCREEN_AT.
+  return lastDeathCause === ELECTROCUTION_CAUSE ? ELECTROCUTION_SCREEN_AT : DEATH_SCREEN_DELAY_SECONDS
+}
+
+function deathScreenVisible(): boolean {
+  return RESPAWN_DELAY_SECONDS - respawnCountdown >= deathScreenDelay()
 }
 
 // ── The strip ──────────────────────────────────────────────────────────────
@@ -374,16 +493,22 @@ function candleCounter() {
   const coreH = px(11, 8) * (0.55 + 0.5 * flick)
   const coreW = px(4, 3) * (0.7 + 0.4 * flick)
 
+  // NO POSITION OF ITS OWN. This used to plant itself top-right under the
+  // strip; on request it now sits in the bottom-right stack directly above the
+  // clock, so the three things you read mid-run — candles, time, hearts — are
+  // one column in one corner instead of scattered across three. The caller owns
+  // where it goes.
+  //
+  // pointerFilter belongs INSIDE uiTransform. As a bare JSX attribute react-ecs
+  // treats it as an unknown component and runs `'onChange' in "none"`, which
+  // throws and takes down the whole UI tree. That shipped once from this very
+  // function; tools/check_undefined.py now fails the build on it.
   return (
     <UiEntity
       uiTransform={{
-        positionType: 'absolute',
-        // Top-right, dropped clear of the strip and the explorer's own
-        // top-right button cluster (the menu/map/settings icons sit right
-        // under the notch on both desktop and mobile).
-        position: { top: STRIP_HEIGHT() + px(96), right: px(16) },
         flexDirection: 'row',
         alignItems: 'center',
+        margin: { bottom: px(6) },
         pointerFilter: 'none' // never eat a tap meant for the world underneath
       }}
     >
@@ -850,6 +975,22 @@ function toastStack() {
   )
 }
 
+/**
+ * A ranking row's hearts as pips — the same language as the running HUD's
+ * heartPips(), but for an arbitrary row rather than the live round.
+ *
+ * '' when hearts is -1 ("not recorded"): rows stored before hearts were
+ * tracked, and players seen only as live in-room peers. Drawing three hollow
+ * pips instead would assert they scraped through on zero, which is a claim the
+ * board has no basis for.
+ */
+function rowHeartPips(hearts: number): string {
+  if (hearts < 0) return ''
+  let pips = ''
+  for (let i = 0; i < ROUND_HEARTS; i++) pips += i < hearts ? '♥' : '♡'
+  return pips
+}
+
 function leaderboardRows() {
   const ranking = escapeRanking().slice(0, 5)
   if (ranking.length === 0) {
@@ -893,6 +1034,18 @@ function leaderboardRows() {
           font: FONT_BODY,
           textAlign: 'middle-left',
           color: r.me ? WAX : BONE
+        }}
+      />
+      <UiEntity
+        uiTransform={{ width: px(56) }}
+        uiText={{
+          value: rowHeartPips(r.hearts),
+          fontSize: fs(T_SMALL),
+          font: FONT_DATA,
+          textAlign: 'middle-right',
+          // Dimmer than the time even on your own row: hearts are colour on the
+          // run, the time is the score.
+          color: r.me ? WAX : ASH
         }}
       />
       <UiEntity
@@ -1057,16 +1210,18 @@ export const uiMenu = () => (
         {/* Only while the camera is off the player, orbiting their target. */}
         {previewActive && previewArrows()}
 
-        {/* Candle count, top-RIGHT under the strip — paired with the exit
-            status on the left, so both "where am I up to" readouts share one
-            line across the top. */}
-        {candleCounter()}
-
-        {/* Exit status, top-left under the strip — paired with the strip's
-            own candle-progress cells since both describe "how close to
-            unlocked". Carries the candle count as a NUMBER: counting five to
-            seven cells on a phone strip is above what anyone can do at a
-            glance mid-panic, so the strip alone is not enough here. */}
+        {/* Exit status, top-left under the strip — and ONLY once the exit is
+            actually doing something.
+            
+            It used to sit there permanently reading "SEALED · 3 candles left",
+            which made candle progress the third readout on screen saying the
+            same thing: the strip along the top already draws one cell per
+            candle required, and the counter top-right already states it as
+            digits. Three places for one number is not redundancy that helps,
+            it is clutter that hides the two readouts which are unique — the
+            clock and the hearts. Now this line appears when it has news
+            nothing else carries: the exit arming, and then the way out. */}
+        {portalReady && (
         <UiEntity
           uiTransform={{
             positionType: 'absolute',
@@ -1078,11 +1233,13 @@ export const uiMenu = () => (
             fontSize: fs(T_MICRO),
             font: FONT_DATA,
             textAlign: 'middle-left',
-            color: portalReady ? VEIL : ASH
+            color: VEIL
           }}
         />
+        )}
 
-        {/* Clock + hearts, bottom-right. On mobile the explorer draws its own
+        {/* Candles + clock + hearts, bottom-right, in that order — the whole
+            run state in one column. On mobile the explorer draws its own
             jump/E/F touch cluster inside the safe area at the bottom-right —
             lifted clear of it (same reasoning as where FLARE used to sit
             before it was removed); desktop has no such cluster so it can sit
@@ -1096,6 +1253,7 @@ export const uiMenu = () => (
             pointerFilter: 'none'
           }}
         >
+          {candleCounter()}
           <UiEntity
             uiTransform={{ height: px(T_CLOCK * 1.25) }}
             uiText={{
@@ -1109,7 +1267,7 @@ export const uiMenu = () => (
           <UiEntity
             uiTransform={{ flexDirection: 'row', alignItems: 'center', margin: { top: px(4) } }}
           >
-            {heartPips(T_BODY)}
+            {heartPips(T_HEART)}
           </UiEntity>
         </UiEntity>
       </ScreenInsetArea>
@@ -1203,18 +1361,46 @@ export const uiMenu = () => (
           }}
         />,
         <UiEntity
-          key="sub"
-          uiTransform={{ width: '100%', height: px(T_BODY * 3.4), margin: { top: px(6) } }}
+          key="dread"
+          uiTransform={{ width: '100%', height: px(T_BODY * 4.6), margin: { top: px(12) } }}
           uiText={{
+            // THE HOUSE TALKING, directly under the objective and above the
+            // rules. The headline says what to do and the block below says how
+            // the game works; this is the only line on the screen whose job is
+            // how it FEELS, so it gets the position right under the title and
+            // its own breathing room above the mechanics.
+            //
+            // BONE, not RUST. Red would suit the threat, but RUST (#8E2B22) on
+            // this scrim is about 2.3:1 — under half what body copy needs to
+            // stay legible, and this is the longest paragraph on the screen.
+            // BONE is the palette's own prose colour and clears 6:1. The
+            // headline above it stays WAX, so the hierarchy still reads
+            // title -> voice -> rules without spending contrast on it.
+            //
+            // Height is 4.6 lines for ~3.8 lines of wrapped text at this size
+            // in the 620px column — the same slack the block below carries,
+            // because a fixed height that runs short CLIPS rather than grows.
             value:
-              'They are hidden across the yard and the house — the front door is straight ahead. ' +
-              `Skeletons hunt you and the wall spikes fire on their own. Three hearts, one touch kills, ${Math.round(ROUND_SECONDS / 60)} minutes.`,
+              'Why are you here? Are you lost? This house isn\'t just haunted, it has real murderous intent! ' +
+              'Beware of your surroundings — everything can put you to death! ' +
+              'No one has ever come out here alive. Your grave is already waiting…',
             fontSize: fs(T_BODY),
             font: FONT_BODY,
             textAlign: 'middle-center',
             color: BONE
           }}
         />,
+        // (The rules paragraph lived here — "They are hidden across the yard
+        // and the house ... Three hearts, one touch kills, N minutes." Removed
+        // on request.
+        //
+        // Everything it stated is on screen for the whole run anyway: the
+        // candle strip along the top has one cell per candle required, the
+        // heart pips show the three lives, and the clock counts the round down.
+        // The one thing it alone carried was "the front door is straight
+        // ahead", which is a hint rather than a rule. The screen now reads
+        // objective -> atmosphere -> scoring, and the mechanics are learned by
+        // playing rather than by reading a wall of text before you start.)
         <UiEntity
           key="score"
           uiTransform={{ width: '100%', height: px(T_SMALL * 1.8), margin: { top: px(10) } }}
@@ -1284,7 +1470,13 @@ export const uiMenu = () => (
     )}
 
     {/* ── WIN ──────────────────────────────────────────────────────────── */}
-    {roundPhase === 'won' && (
+    {/* The celebration shot owns the screen first — see victoryCard(). This
+        overlay arrives partway through the camera move, not after it, so the
+        last seconds of the arc play behind it. gameLoop freezes its reset
+        countdown for exactly the same window. */}
+    {roundPhase === 'won' && winScreenHeld && victoryCard()}
+
+    {roundPhase === 'won' && !winScreenHeld && (
       <UiEntity uiTransform={{ width: '100%', height: '100%', positionType: 'absolute' }}>
         {overlayShell(a(VOID, 0.93), [
           <UiEntity
@@ -1397,7 +1589,12 @@ export const uiMenu = () => (
     )}
 
     {/* ── DEFEAT ───────────────────────────────────────────────────────── */}
-    {roundPhase === 'defeated' &&
+    {/* Stands down for the death replay. The recap is launched FROM this
+        screen, and leaving a full-canvas 93% scrim over it meant pressing
+        Death Replay lit up a shot nobody could see. The countdown behind it is
+        paused for the same window (loopSystem in gameLoop.ts), so nothing is
+        lost by hiding it - the screen comes back exactly as it was. */}
+    {roundPhase === 'defeated' && !deathCamActive &&
       overlayShell(a(VOID, 0.93), [
         <UiEntity
           key="head"
@@ -1421,6 +1618,55 @@ export const uiMenu = () => (
             color: BONE
           }}
         />,
+        // THE RECAP. Rendered as ONE text block rather than a row per death:
+        // the overlay is a fixed-height shell, and N children of unknown count
+        // is how you get a list that pushes the Play Again button off a phone
+        // screen. A joined string grows in a way the shell already handles.
+        ...(deathLog.length > 0
+          ? [
+              <UiEntity
+                key="recapHead"
+                uiTransform={{ width: '100%', height: px(T_MICRO * 1.6), margin: { top: px(16) } }}
+                uiText={{
+                  value: 'HOW IT WENT WRONG',
+                  fontSize: fs(T_MICRO),
+                  font: FONT_DATA,
+                  textAlign: 'middle-center',
+                  color: RUST
+                }}
+              />,
+              <UiEntity
+                key="recap"
+                uiTransform={{
+                  width: '100%',
+                  height: px(T_MICRO * 1.7 * deathLog.length),
+                  margin: { top: px(4) }
+                }}
+                uiText={{
+                  value: deathRecapLines().join('\n'),
+                  fontSize: fs(T_MICRO),
+                  font: FONT_DATA,
+                  textAlign: 'middle-center',
+                  color: BONE
+                }}
+              />
+            ]
+          : []),
+        ...(deathRecapPattern() !== ''
+          ? [
+              <UiEntity
+                key="recapPattern"
+                uiTransform={{ width: '100%', height: px(T_MICRO * 1.8), margin: { top: px(6) } }}
+                uiText={{
+                  value: deathRecapPattern(),
+                  fontSize: fs(T_MICRO),
+                  font: FONT_BODY,
+                  textAlign: 'middle-center',
+                  color: RUST
+                }}
+              />
+            ]
+          : []),
         <UiEntity
           key="footer"
           uiTransform={{ width: '100%', height: px(T_MICRO * 1.8), margin: { top: px(20) } }}
@@ -1432,6 +1678,38 @@ export const uiMenu = () => (
             color: ASH
           }}
         />,
+        // DEATH REPLAY — replays the shot on demand. Present on the DEFEAT
+        // screen too, because the run-ending death is the one you most want to
+        // see and it is the only one the death screen never shows (defeat takes
+        // over immediately on the last heart).
+        ...(canReplayDeath()
+          ? [
+              <UiEntity
+                key="replay"
+                uiTransform={{
+                  width: '70%',
+                  maxWidth: px(320),
+                  height: px(52, 42),
+                  margin: { top: px(14) },
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+                uiBackground={{ color: a(RUST, 0.9) }}
+                onMouseDown={() => replayDeath()}
+              >
+                <UiEntity
+                  uiTransform={{ width: '100%', height: '100%' }}
+                  uiText={{
+                    value: 'Death Replay',
+                    fontSize: fs(T_BODY),
+                    font: FONT_BODY,
+                    textAlign: 'middle-center',
+                    color: BONE
+                  }}
+                />
+              </UiEntity>
+            ]
+          : []),
         <UiEntity
           key="playAgain"
           uiTransform={{
@@ -1462,7 +1740,46 @@ export const uiMenu = () => (
     {/* Scrim, blood and fade cover the FULL canvas (a splatter that stops at
         the notch line reads as a bug); only the readable column is
         constrained to the safe area. */}
-    {isPlayerDead && roundPhase === 'playing' && (
+    {/* DEATH RECAP banner — shown ONLY while the death cam has the camera.
+        The scrim, blood and text below are suppressed for that window (see the
+        deathCamActive guard on the block after this) so the shot is clean; this
+        is the one label that stays, because a camera that cuts away from your
+        body with no explanation reads as a bug rather than a replay. */}
+    {/* NOT gated on isPlayerDead. The recap can now be pressed from the HUD
+        chip after you are back on your feet, and that is the case that most
+        needs the label — a camera that cuts away from a living player with
+        nothing on screen reads as the game breaking. */}
+    {/* NOT gated on roundPhase any more. The run-ending third death leaves
+        roundPhase 'defeated', so this label - the one thing that explains why
+        the camera has cut away - was the one death it never appeared for. */}
+    {deathCamActive && (
+      <UiEntity uiTransform={{ width: '100%', height: '100%', positionType: 'absolute' }}>
+        <ScreenInsetArea uiTransform={{ flexDirection: 'column', alignItems: 'center' }}>
+          <UiEntity
+            uiTransform={{ width: '100%', height: px(T_MICRO * 2.2), margin: { top: px(28) } }}
+            uiText={{
+              value: 'DEATH RECAP',
+              fontSize: fs(T_MICRO),
+              font: FONT_DATA,
+              textAlign: 'middle-center',
+              color: RUST
+            }}
+          />
+          <UiEntity
+            uiTransform={{ width: '100%', height: px(T_HEAD * 1.3) }}
+            uiText={{
+              value: lastDeathCause !== '' ? lastDeathCause : 'Something caught you.',
+              fontSize: fs(T_HEAD * 0.75),
+              font: FONT_DISPLAY,
+              textAlign: 'middle-center',
+              color: BONE
+            }}
+          />
+        </ScreenInsetArea>
+      </UiEntity>
+    )}
+
+    {isPlayerDead && roundPhase === 'playing' && !deathCamActive && deathScreenVisible() && (
       <UiEntity
         uiTransform={{ width: '100%', height: '100%', positionType: 'absolute' }}
         uiBackground={{ color: a(RUST, 0.35) }}
@@ -1522,6 +1839,35 @@ export const uiMenu = () => (
               the two read as the same affordance, and it sits AFTER the
               fade-to-black in the tree so it stays visible once the screen has
               gone solid black two-thirds of the way through the countdown. */}
+          {/* DEATH REPLAY — runs the shot again on demand. Above Respawn Now
+              on purpose: pressing respawn ends the moment you might want to
+              look at, so the destructive button should not be the first one
+              your thumb lands on. */}
+          {canReplayDeath() && (
+            <UiEntity
+              uiTransform={{
+                width: '70%',
+                maxWidth: px(320),
+                height: px(52, 42),
+                margin: { top: px(14) },
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+              uiBackground={{ color: a(RUST, 0.9) }}
+              onMouseDown={() => replayDeath()}
+            >
+              <UiEntity
+                uiTransform={{ width: '100%', height: '100%' }}
+                uiText={{
+                  value: 'Death Replay',
+                  fontSize: fs(T_BODY),
+                  font: FONT_BODY,
+                  textAlign: 'middle-center',
+                  color: BONE
+                }}
+              />
+            </UiEntity>
+          )}
           <UiEntity
             uiTransform={{
               width: '70%',

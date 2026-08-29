@@ -13,7 +13,7 @@ import { onPlayerDeath, gameStarted, isPlayerDead } from './gameState'
 import { playerPosition } from './playerTracker'
 import { nearestSkeletonDistance, playerInYard } from './enemies/skeletons'
 import { addSafeSystem } from './safeSystem'
-import { MASTER_VOLUME } from './config'
+import { MASTER_VOLUME, ELECTROCUTION_CAUSE } from './config'
 
 export const SOUND_AMBIENT = 'assets/sounds/ambient.mp3'
 export const SOUND_SKELETON_ATTACK = 'assets/sounds/skeleton_attack.mp3'
@@ -51,12 +51,79 @@ export const SOUND_SWING = 'assets/sounds/swing.mp3'
 /**
  * The axes get their own whoosh — the planks keep SOUND_SWING.
  *
- * A 9m blade and a falling board should not make the same noise. Synthesised
- * rather than downloaded, so it carries no licence with it: three layers of
- * filtered noise (mid band for the air being cut, a low band for the weight
- * behind it, a bright spike for the edge passing you), 0.8s.
+ * A 9m blade and a falling board should not make the same noise. Supplied
+ * sample (Dragon Studio, copyright-free swoosh) — it replaced the synthesised
+ * three-layer noise whoosh that used to live at assets/sounds/axe_swing.wav.
+ * That file is still on disk; nothing loads it any more.
  */
-export const SOUND_AXE_SWING = 'assets/sounds/axe_swing.wav'
+export const SOUND_AXE_SWING = 'assets/sounds/axe_swoosh.mp3'
+
+/**
+ * THE BLADE SOUND ON A KILL — two samples, strictly ALTERNATING.
+ *
+ * Supplied on request (Dragon Studio, violent sword slice 1 and 2). Plays on
+ * EVERY death except the two that have no impact to punctuate — see
+ * NO_SLICE_CAUSES.
+ *
+ * ALTERNATING rather than random, on request ("rotate it", "consecutively"):
+ * two samples picked at random collide on a coin flip and the repeat is the one
+ * thing you notice. Strict round-robin means the same slice can never land
+ * twice running, which is the whole reason there are two of them.
+ *
+ * This LAYERS OVER the death splat rather than replacing it — the splat is the
+ * body, the slice is the thing that went through it. Both fire on the same
+ * frame from the same spot.
+ */
+const KILL_SLICE_SOUNDS = ['assets/sounds/kill_slice_1.mp3', 'assets/sounds/kill_slice_2.mp3']
+
+/**
+ * BONES, for the two deaths with no blade in them (supplied on request).
+ *
+ * A fall breaks you against the floor and a skeleton pulls you apart; neither
+ * is a slice, and the slice over them read as a sound from somebody else's
+ * death. These take its place — they are not layered with it.
+ */
+const SOUND_BONE_BREAK = 'assets/sounds/bone_break.mp3' // Dragon Studio, bone breaking — falls
+const SOUND_BONE_CRACK = 'assets/sounds/bone_crack.mp3' // Universfield, bone crack horror — skeletons
+
+/**
+ * Deaths that get their OWN impact sound instead of the rotating slice.
+ *
+ * Matched by exact string against what killPlayer() was handed, so these MUST
+ * stay in step with:
+ *   traps/fallDeath.ts     'Fell to your death' / 'Fell from the second floor'
+ *   enemies/skeletons.ts   'Torn apart by a skeleton'
+ * Both fall strings map to the same sample: fallDeath picks between them purely
+ * on drop height for the death-screen wording, and either way you hit a floor.
+ */
+const CAUSE_SOUNDS: { [cause: string]: string } = {
+  'Fell to your death': SOUND_BONE_BREAK,
+  'Fell from the second floor': SOUND_BONE_BREAK,
+  'Torn apart by a skeleton': SOUND_BONE_CRACK
+}
+
+/**
+ * Deaths that get NO impact sound at all — no slice, no bones.
+ *
+ * Lightning only, on request: the strike already has thunder on it (see
+ * lightning.ts) and that IS the sound of that death. Anything laid over it is
+ * a second event competing with the one the player actually saw. The death
+ * splat underneath is deliberately left alone — this adds nothing and removes
+ * nothing, which was the ask.
+ *
+ * Imported rather than re-typed: config.ts already warns this string has to
+ * match lightning.ts, and a third copy is a third thing to get wrong.
+ */
+const NO_IMPACT_CAUSES = new Set([ELECTROCUTION_CAUSE])
+
+/** Round-robin cursor over KILL_SLICE_SOUNDS. */
+let nextSlice = 0
+
+function pickKillSlice(): string {
+  const src = KILL_SLICE_SOUNDS[nextSlice]
+  nextSlice = (nextSlice + 1) % KILL_SLICE_SOUNDS.length
+  return src
+}
 export const SOUND_HEARTBEAT = 'assets/sounds/heartbeat.mp3' // CC0, freesound #485076
 export const SOUND_BONE_RATTLE = 'assets/sounds/bone_rattle.mp3' // CC0, freesound #202102
 export const SOUND_CANDLE_LIGHT = 'assets/sounds/candle_lit.mp3' // plays once a candle is fully lit
@@ -152,7 +219,13 @@ export function initSounds() {
   Transform.create(heartbeatEntity, { parent: engine.PlayerEntity })
   AudioSource.create(heartbeatEntity, { audioClipUrl: SOUND_HEARTBEAT, playing: false, loop: true, volume: 0 })
 
-  onPlayerDeath(() => playSoundAt(pickDeathSound(), playerPosition, 1))
+  onPlayerDeath((cause) => {
+    playSoundAt(pickDeathSound(), playerPosition, 1)
+    // Then the impact on top of the splat: the cause's own sound if it has
+    // one, the rotating slice otherwise, nothing at all for lightning.
+    const impact = CAUSE_SOUNDS[cause] ?? (NO_IMPACT_CAUSES.has(cause) ? null : pickKillSlice())
+    if (impact) playSoundAt(impact, playerPosition, 1)
+  })
 
   addSafeSystem(cleanupSystem, 'soundsCleanupSystem')
   addSafeSystem(tensionSystem, 'soundsTensionSystem')
