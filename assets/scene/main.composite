@@ -1150,27 +1150,6 @@
             "parent": 0
           }
         },
-        "591": {
-          "json": {
-            "position": {
-              "x": 4.75,
-              "y": 1,
-              "z": 7.155828475952148
-            },
-            "scale": {
-              "x": 2.2230000495910645,
-              "y": 2.108649969100952,
-              "z": 1.0703333616256714
-            },
-            "rotation": {
-              "x": 0,
-              "y": -0.7052746415138245,
-              "z": 0,
-              "w": 0.7089341878890991
-            },
-            "parent": 0
-          }
-        },
         "594": {
           "json": {
             "position": {
@@ -2099,13 +2078,6 @@
             "invisibleMeshesCollisionMask": 3
           }
         },
-        "591": {
-          "json": {
-            "src": "assets/Models/leadboard/leadboard.glb",
-            "visibleMeshesCollisionMask": 0,
-            "invisibleMeshesCollisionMask": 3
-          }
-        },
         "594": {
           "json": {
             "src": "assets/Models/KILLERHOUSE_/KILLERHOUSE_.glb",
@@ -2486,11 +2458,6 @@
             "value": "Grave 04_5"
           }
         },
-        "591": {
-          "json": {
-            "value": "leadboard.glb"
-          }
-        },
         "594": {
           "json": {
             "value": "KILLERHOUSE_.glb"
@@ -2845,8 +2812,7 @@
                   604,
                   131588,
                   517,
-                  553,
-                  591
+                  553
                 ]
               },
               {
@@ -3173,10 +3139,6 @@
               {
                 "entity": 553,
                 "children": []
-              },
-              {
-                "entity": 591,
-                "children": []
               }
             ]
           }
@@ -3420,9 +3382,6 @@
           "json": {}
         },
         "590": {
-          "json": {}
-        },
-        "591": {
           "json": {}
         },
         "595": {
