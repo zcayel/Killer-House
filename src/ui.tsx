@@ -63,6 +63,9 @@ import {
   BLOOD_OVERLAY_TEXTURE,
   KILLER_HOUSE_TITLE_TEXTURE,
   KILLER_HOUSE_TITLE_ASPECT,
+  TAP_ICON_TEXTURE,
+  HEART_PIP_TEXTURE,
+  MOBILE_DARKNESS_RELIEF,
   RESPAWN_DELAY_SECONDS,
   DEATH_SCREEN_DELAY_SECONDS,
   ELECTROCUTION_CAUSE,
@@ -108,7 +111,8 @@ import {
   T_SCORE,
   STRIP_HEIGHT,
   STRIP_GAP,
-  uiIsMobile
+  uiIsMobile,
+  uiSafeDesignHeight
 } from './uiTheme'
 
 /**
@@ -128,11 +132,32 @@ import {
  */
 let uiClock = 0
 
+/**
+ * THE WHOLE CANVAS, NOT THE SAFE AREA — and this one line is why the mobile
+ * overlays looked broken.
+ *
+ * setUiRenderer defaults `screenInset` to 'device', which wraps the ENTIRE
+ * scene UI in a ScreenInsetArea before it ever reaches uiMenu(). On desktop
+ * the insets are zero so nothing shows; on a phone every "width: 100%,
+ * height: 100%" scrim in this file — the death screen, the intro, the win
+ * card, the night-gloom veil, the lightning flash — was 100% of the SAFE
+ * AREA, so it painted a black rectangle with a bright frame of live 3D scene
+ * around it. The gloom veil is permanent, which is why that frame read as an
+ * overlay that "never goes away" after the intro is dismissed.
+ *
+ * 'none' hands us the real canvas. The safe area is still respected exactly
+ * where it belongs — this file wraps its own readable content in
+ * ScreenInsetArea by hand (overlayShell, the HUD, the toasts) — but it is now
+ * applied ONCE instead of twice. Full-bleed things are finally full-bleed.
+ *
+ * NOTHING CHANGES ON DESKTOP: UiCanvasInformation reports zero insets there,
+ * so the wrapper this removes was already a no-op.
+ */
 export function setupUi() {
   addSafeSystem((dt: number) => {
     uiClock += dt
   }, 'uiClockSystem')
-  ReactEcsRenderer.setUiRenderer(safeUi)
+  ReactEcsRenderer.setUiRenderer(safeUi, { screenInset: 'none' })
 }
 
 /**
@@ -589,6 +614,11 @@ const TITLE_DROP_COUNT = 14
 // ScreenInsetArea, which on a notched phone in landscape gives up ~40px to each
 // cutout. The slack covers those insets so a wide title can't run under one.
 const TITLE_CANVAS_FRACTION = 0.9
+// The most of the safe area's HEIGHT the title may take on a phone. 0.20 is
+// what leaves the rest of the intro column — headline, dread, score, best,
+// button — inside OVERLAY_DESIGN_HEIGHT (uiTheme.ts) at the mobile scale that
+// constant caps. Move one and re-check the other.
+const TITLE_MAX_HEIGHT_FRAC = 0.2
 // Mid stop of the baked ramp (#8E100B), so a falling drop is the same blood as
 // the drip it left. Local to the title: the palette's RUST means "loss" and is
 // spent on death/defeat headlines, and this is art, not a state colour.
@@ -611,7 +641,18 @@ function dropHash(i: number, salt: number): number {
 }
 
 function killerHouseTitle() {
-  const w = Math.min(px(TITLE_WIDTH_PX), Math.round(uiCanvasWidth() * TITLE_CANVAS_FRACTION))
+  let w = Math.min(px(TITLE_WIDTH_PX), Math.round(uiCanvasWidth() * TITLE_CANVAS_FRACTION))
+  // A CEILING ON HEIGHT TOO, and only on a phone. The two widths above are the
+  // whole story on a monitor, where there is always vertical room to spare; on
+  // a landscape phone the screen is barely 720 design units tall and a title
+  // sized purely off the width eats a third of it, pushing the button at the
+  // bottom of the intro column off the bottom of the screen. Measured off the
+  // real safe area rather than a guessed device size, so it adapts to whatever
+  // phone this is — see uiSafeDesignHeight(). Desktop takes neither branch.
+  if (uiIsMobile()) {
+    const room = uiSafeDesignHeight()
+    if (room > 0) w = Math.min(w, Math.round(room * TITLE_MAX_HEIGHT_FRAC * KILLER_HOUSE_TITLE_ASPECT))
+  }
   const h = Math.max(2, Math.round(w / KILLER_HOUSE_TITLE_ASPECT))
 
   // SPACING ONLY, and deliberately almost none (on request — close the gap to
@@ -896,24 +937,51 @@ function strip(frozen: boolean) {
 }
 
 /** Hearts as bone pips. No red on the running HUD — red is reserved for loss. */
-function heartPips(size: number) {
+function heartPips(size: number, marginTop = 0) {
   const pips = []
   for (let i = 0; i < ROUND_HEARTS; i++) {
     pips.push(
       <UiEntity
         key={i}
-        uiTransform={{ width: px(size * 1.15), height: px(size * 1.5) }}
-        uiText={{
-          value: i < hearts ? '♥' : '♡',
-          fontSize: fs(size),
-          font: FONT_DATA,
-          textAlign: 'middle-center',
-          color: i < hearts ? WAX : ASH
+        uiTransform={{ width: px(size * 1.15), height: px(size * 1.15) }}
+        // NOT TEXT. See HEART_PIP_TEXTURE — the filled heart character does not
+        // render on mobile at all. uiBackground's color multiplies the sampled
+        // texel (pixel = color * sample2D), so one white shape serves both
+        // states: full weight for a heart still held, dim for one spent.
+        uiBackground={{
+          textureMode: 'stretch',
+          texture: { src: HEART_PIP_TEXTURE },
+          color: i < hearts ? WAX : a(ASH, 0.5)
         }}
       />
     )
   }
-  return pips
+  // THE ROW IS SIZED HERE, not left to the caller. Every caller used to wrap
+  // this array in a width-less, height-less row and let the layout engine infer
+  // the size from these children. It does not: react-ecs defaults an unset
+  // height to YGU_UNDEFINED (see defaultUiTransform in
+  // node_modules/@dcl/react-ecs/dist/components/uiTransform/index.js), the row
+  // collapsed, and all ROUND_HEARTS pips drew stacked on the same point — which
+  // is why the HUD and the death screen have both been showing ONE heart rather
+  // than three, on every platform, since long before the mobile pass.
+  return (
+    <UiEntity
+      uiTransform={{
+        width: px(size * 1.15) * ROUND_HEARTS,
+        height: px(size * 1.15),
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'flex-end',
+        // ON THIS ROW, never on a wrapper around it. A bare UiEntity added just
+        // to hold a margin has no width of its own, lands at the column's right
+        // edge, and sends this row off the screen edge — which is exactly the
+        // collapse the explicit size above exists to stop.
+        margin: { top: marginTop }
+      }}
+    >
+      {pips}
+    </UiEntity>
+  )
 }
 
 /** "Someone died" / "someone lit a candle" — shared events, newest at the bottom. */
@@ -1162,6 +1230,130 @@ function debugText(): string {
   }
 }
 
+/**
+ * Candles + clock + hearts, bottom-right, in that order — the whole run state
+ * in one column.
+ *
+ * TWO CALLERS, ONE COLUMN. On desktop this is drawn inside the HUD's
+ * ScreenInsetArea, unchanged from the day it was written. On mobile it is
+ * drawn as a sibling of that block, against the raw canvas, and pinned to the
+ * OUTERMOST right edge (on request) — the safe-area inset on a landscape
+ * phone is worth well over a hundred virtual px, and parking the three
+ * readouts you check mid-run that far inboard wasted the one part of the
+ * screen a thumb never covers.
+ *
+ * THE LIFT IS A PERCENTAGE ON MOBILE, and that is the fix for hearts nobody
+ * could count. The explorer draws its own jump/E/F/zoom touch cluster at the
+ * bottom-right, and the hearts are the LAST child of this column — so they sit
+ * closest to the bottom and they are what the cluster eats first. On a phone
+ * that cluster stands about 37% of the screen tall; px(140) put this column's
+ * floor at ~30%, which buried two of the three pips behind the F and + buttons
+ * and left only the one pip that happened to fall in the gap beside them.
+ *
+ * px() was the wrong unit for the job regardless of the number: it scales with
+ * OUR design scale, and the thing being dodged is drawn by the explorer at a
+ * size we have no say in. A percentage of the screen tracks it. 40% clears the
+ * cluster with room to spare on the canvases measured, and does the same on a
+ * screen of any size — the same reasoning the preview label a few hundred
+ * lines down already uses for its own offset.
+ *
+ * Desktop has no touch cluster and keeps its original px(24).
+ */
+function runStateColumn() {
+  const mobile = uiIsMobile()
+  return (
+    <UiEntity
+      uiTransform={{
+        positionType: 'absolute',
+        // px(2) rather than 0: a hair of margin so a rounded corner can't bite
+        // the last digit of the clock, which is the readout this column exists
+        // for. Desktop is untouched at its original px(18).
+        position: mobile ? { bottom: '40%', right: px(10) } : { bottom: px(24), right: px(18) },
+        flexDirection: 'column',
+        alignItems: 'flex-end',
+        pointerFilter: 'none'
+      }}
+    >
+      {candleCounter()}
+      <UiEntity
+        uiTransform={{ height: px(T_CLOCK * 1.25) }}
+        uiText={{
+          value: formatTime(elapsedSeconds()),
+          fontSize: fs(T_CLOCK),
+          font: FONT_DATA,
+          textAlign: 'middle-right',
+          color: WAX
+        }}
+      />
+      {heartPips(T_HEART, px(4))}
+    </UiEntity>
+  )
+}
+
+/**
+ * "[hand] to light" — the mobile half of the channel prompt.
+ *
+ * WHY IT EXISTS. The desktop line reads "Hold to light", which is complete
+ * there because a mouse button is the only thing it could mean. On a phone it
+ * is not: the explorer draws four round buttons at the bottom-right and
+ * nothing on screen says which one lights a candle. So the mobile line names
+ * the button by drawing it — the same circled hand, at sentence size.
+ *
+ * A ROW WITH A SIZED TEXT BOX, and that is not the obvious construction. The
+ * desktop line is one full-width box with textAlign 'middle-center', which
+ * centres perfectly without anyone knowing how wide the text is — react-ecs
+ * does not measure text for layout, so a text box with no width lays out as
+ * zero and its glyphs simply overflow it. Put an icon beside a zero-width box
+ * and the flex centring has nothing to centre: the pair lands half a
+ * sentence right of where it belongs. Giving the text an estimated width
+ * (~0.52em per character, which is close for this sans at this size) makes
+ * the ROW the right size, so the group centres as a group. The estimate only
+ * affects how the gap looks, never whether the line is centred.
+ */
+function tapToLightPrompt() {
+  const label = 'to light'
+  const icon = px(T_BODY * 1.7)
+  return (
+    <UiEntity
+      uiTransform={{
+        // Same 42% the desktop line sits at, so the prompt does not move
+        // between platforms.
+        positionType: 'absolute',
+        position: { bottom: '42%', left: 0 },
+        width: '100%',
+        height: px(T_BODY * 2),
+        flexDirection: 'row',
+        justifyContent: 'center',
+        alignItems: 'center',
+        pointerFilter: 'none'
+      }}
+    >
+      <UiEntity
+        uiTransform={{ width: icon, height: icon, margin: { right: px(7) } }}
+        // Tinted to FLAME like the words next to it: the glyph is baked white
+        // with the shape in its alpha precisely so it can take the prompt's
+        // own colour rather than sitting next to it as a white sticker.
+        // WAX, NOT FLAME. This glyph is a picture of a BUTTON — the explorer
+        // draws that button in white, and an orange copy of it beside orange
+        // words stopped reading as "press this" and started reading as
+        // decoration. FLAME also means one thing everywhere else in this HUD
+        // (fire, and only fire), which a UI control is not.
+        uiBackground={{ textureMode: 'stretch', texture: { src: TAP_ICON_TEXTURE }, color: WAX }}
+      />
+      <UiEntity
+        uiTransform={{ width: px(T_BODY * 0.52 * label.length), height: '100%' }}
+        uiText={{
+          value: label,
+          fontSize: fs(T_BODY),
+          font: FONT_BODY,
+          textAlign: 'middle-left',
+          color: FLAME
+        }}
+      />
+    </UiEntity>
+  )
+}
+
 export const uiMenu = () => (
   <UiEntity uiTransform={{ width: '100%', height: '100%', positionType: 'absolute' }}>
     {/* Darkness veil (night gloom + thunder blackout). Gated by
@@ -1170,7 +1362,7 @@ export const uiMenu = () => (
     {DARKNESS_VEIL_ENABLED && (darknessAlpha > 0.01 || blackoutAlpha > 0.01) && (
       <UiEntity
         uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', pointerFilter: 'none' }}
-        uiBackground={{ color: Color4.create(0, 0, 0, Math.min(1, Math.max(darknessAlpha, blackoutAlpha))) }}
+        uiBackground={{ color: Color4.create(0, 0, 0, Math.min(1, Math.max(darknessAlpha * (uiIsMobile() ? MOBILE_DARKNESS_RELIEF : 1), blackoutAlpha))) }}
       />
     )}
 
@@ -1238,40 +1430,19 @@ export const uiMenu = () => (
         />
         )}
 
-        {/* Candles + clock + hearts, bottom-right, in that order — the whole
-            run state in one column. On mobile the explorer draws its own
-            jump/E/F touch cluster inside the safe area at the bottom-right —
-            lifted clear of it (same reasoning as where FLARE used to sit
-            before it was removed); desktop has no such cluster so it can sit
-            lower. */}
-        <UiEntity
-          uiTransform={{
-            positionType: 'absolute',
-            position: uiIsMobile() ? { bottom: px(140), right: px(18) } : { bottom: px(24), right: px(18) },
-            flexDirection: 'column',
-            alignItems: 'flex-end',
-            pointerFilter: 'none'
-          }}
-        >
-          {candleCounter()}
-          <UiEntity
-            uiTransform={{ height: px(T_CLOCK * 1.25) }}
-            uiText={{
-              value: formatTime(elapsedSeconds()),
-              fontSize: fs(T_CLOCK),
-              font: FONT_DATA,
-              textAlign: 'middle-right',
-              color: WAX
-            }}
-          />
-          <UiEntity
-            uiTransform={{ flexDirection: 'row', alignItems: 'center', margin: { top: px(4) } }}
-          >
-            {heartPips(T_HEART)}
-          </UiEntity>
-        </UiEntity>
+        {/* Desktop keeps the column inside the safe area, exactly where it
+            was. Mobile renders it as a sibling of this whole block instead —
+            see runStateColumn(). */}
+        {!uiIsMobile() && runStateColumn()}
       </ScreenInsetArea>
     )}
+
+    {/* THE RUN STATE, OUTSIDE THE SAFE AREA — mobile only, on request.
+        Rendered here rather than inside the ScreenInsetArea above so it can
+        reach the true right edge of the screen; a sibling because
+        ScreenInsetArea positions its children against the inset box and
+        nothing inside it can escape that. */}
+    {gameStarted && roundPhase === 'playing' && uiIsMobile() && runStateColumn()}
 
     {/* Channel prompt, low-centre. The strip already shows the fill in the
         right cell, but the player is looking at the candle in front of them,
@@ -1283,6 +1454,12 @@ export const uiMenu = () => (
         only: the bar lives in the strip. */}
     {gameStarted && roundPhase === 'playing' && !isPlayerDead && (channelFill() !== null || canLightNearby()) && (
       <ScreenInsetArea uiTransform={{ pointerFilter: 'none' }}>
+        {/* MOBILE GETS THE GLYPH, and only in the not-yet-holding state —
+            the moment the player is asking "how do I do this". Once the
+            channel is running the line below already answers it, and a tap
+            glyph beside "keep holding" would argue with itself. Desktop takes
+            neither branch and renders exactly what it always has. */}
+        {uiIsMobile() && channelFill() === null ? tapToLightPrompt() : (
         <UiEntity
           uiTransform={{
             // Moved up from 22% toward center, on request (playtest feedback:
@@ -1302,6 +1479,7 @@ export const uiMenu = () => (
             color: FLAME
           }}
         />
+        )}
       </ScreenInsetArea>
     )}
 
@@ -1820,11 +1998,7 @@ export const uiMenu = () => (
               color: ASH
             }}
           />
-          <UiEntity
-            uiTransform={{ flexDirection: 'row', alignItems: 'center', margin: { top: px(12) } }}
-          >
-            {heartPips(T_HEAD * 0.6)}
-          </UiEntity>
+          {heartPips(T_HEAD * 0.6, px(12))}
           <UiEntity
             uiTransform={{ width: '100%', height: px(T_MICRO * 1.8), margin: { top: px(14) } }}
             uiText={{

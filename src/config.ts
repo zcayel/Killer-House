@@ -240,6 +240,66 @@ export const BLOOD_OVERLAY_TEXTURE = 'assets/scene/Textures/blood_overlay.png' /
  * script prints the number it used at the end of every bake.
  */
 export const KILLER_HOUSE_TITLE_TEXTURE = 'assets/scene/Textures/title_killer_house.png'
+
+/**
+ * THE TAP GLYPH — the hand off the mobile client's own interact button.
+ *
+ * Used by one line in the HUD: the prompt that tells a player standing at a
+ * candle how to light it. On desktop that line names a key; on a phone the
+ * only thing to name is the circled hand the explorer draws bottom-right, and
+ * a scene cannot reference the explorer's asset, so it is redrawn.
+ * tools/bake_tap_icon.py is the contract with this file — a solid white
+ * silhouette on transparent, alpha-only, so the use site tints it.
+ */
+export const TAP_ICON_TEXTURE = 'assets/scene/Textures/tap_icon.png'
+
+/**
+ * THE HEART PIP, as art rather than as a character.
+ *
+ * The pips used to be text: U+2665 for a heart still held, U+2661 for a spent
+ * one. On the mobile client only the HOLLOW one draws — U+2665 falls in the
+ * emoji range and is routed to a font that client has not loaded, U+2661 is not
+ * and lands in the normal atlas. So a full three hearts rendered as nothing and
+ * the readout only appeared as you lost them, one hollow outline at a time.
+ * Reported from a device in exactly those words.
+ *
+ * A texture has no atlas to be missing from. tools/bake_heart_icon.py draws it
+ * white with the shape in alpha, so the use site tints it: WAX for held, dim
+ * ASH for spent.
+ */
+export const HEART_PIP_TEXTURE = 'assets/scene/Textures/heart_pip.png'
+
+/**
+ * How much of the night gloom to keep on a phone.
+ *
+ * The veil is a full-screen black overlay at INTERIOR_DARKNESS / YARD_DARKNESS.
+ * It used to be drawn inside the device safe area by accident, so a phone got a
+ * bright unveiled frame around the edges and the screen read lighter than the
+ * alpha said. Fixing that made mobile correct and, at the same time, visibly
+ * darker than desktop — the gloom was tuned against the broken version.
+ *
+ * Applied to the steady gloom ONLY. The thunder blackout keeps its full weight:
+ * that one is meant to take the room away from you.
+ */
+export const MOBILE_DARKNESS_RELIEF = 0.18
+
+/**
+ * THE BASELINE GLOW, boosted on mobile — the second half of the same fix.
+ *
+ * MOBILE_DARKNESS_RELIEF lifts the black veil, which makes the picture lighter
+ * but not better lit: it raises the blacks toward grey rather than putting
+ * light on anything. Past a point that reads as a washed-out screen you still
+ * cannot find a candle in. So the light the player carries is raised too, which
+ * is what actually reveals geometry.
+ *
+ * Kept WELL under the door moonlight that had to be switched off here (800
+ * intensity at ceiling height, range 8): shadowless lights pass through walls,
+ * and that one was bright enough and high enough to paint a hard-edged wedge on
+ * an interior wall. This one is 400 at waist height, where its bleed lands on
+ * floor and skirting rather than across a wall the camera is pointed at.
+ */
+export const MOBILE_DARK_LIGHT_INTENSITY = 470
+export const MOBILE_DARK_LIGHT_RANGE = 7.5
 export const KILLER_HOUSE_TITLE_ASPECT = 1024 / 270
 // (assets/ui/candle.png is NOT used by the HUD counter. It's a thin
 // yellow-flamed taper; the scene's actual candle is a squat cream pillar on a
@@ -2645,6 +2705,34 @@ export const CHANDELIER_HOVER_SIZE = Vector3.create(2.85, 1.51, 2.85)
 // ---------------------------------------------------------------------------
 export const FALL_KILL_DISTANCE = 4.5 // meters of continuous descent required - well above double-jump apex, so double jumps are safe
 export const FALL_KILL_MIN_SPEED = 9 // peak downward m/s required (the ~6m 2nd-floor plunge exceeds this; jumps and stairs don't)
+
+/**
+ * WHERE A LETHAL FALL HAS TO BEGIN. Below this, no drop kills, however fast.
+ *
+ * The distance and speed thresholds alone describe a fall's SHAPE but not its
+ * ORIGIN, so anything that produced 4.5m of fast descent killed you — a double
+ * jump off high ground, a drop into a stairwell, a launch off the chandelier.
+ * On request: the only fatal fall in this house is the one off the second
+ * floor.
+ *
+ * 7.5m — raised from 6 on request, to sit just under the second floor itself
+ * rather than halfway down to the ground floor.
+ *
+ * Measured against the real house: the second floor is the single room holding
+ * Soccer Ball_3, whose transform puts its floor at y 8.32; the ground floor is
+ * y 2.58 and the yard is y 0. 7.5 leaves 0.8m of headroom below the floor a
+ * player actually stands on — enough that stepping off it always qualifies,
+ * while everything lower now cannot. It no longer tracks areaIndexForY()'s
+ * 6m "upstairs" band, which is deliberate: that band labels where you HAVE
+ * BEEN, and this one decides what kills you.
+ *
+ * DOUBLE JUMPS CANNOT REACH IT in a way that matters. From the yard a double
+ * jump tops out around y 3. From the ground floor it can just brush 6 — and a
+ * fall back down from there is about 3m, which is short of FALL_KILL_DISTANCE
+ * (4.5m), so it fails the distance test even when it passes this one. Only a
+ * genuine plunge from 8.32 clears both.
+ */
+export const FALL_KILL_MIN_START_Y = 7.5
 
 // TRAP 8 — SWINGING BLADE: REMOVED. It drove a 'pblade.glb' entity that is
 // no longer in main.composite; the scene uses the two pblade2 axes instead

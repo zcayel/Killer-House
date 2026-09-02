@@ -76,6 +76,7 @@ import { SWING_TRAP_UNITS, SwingTrapModel, SwingBox } from './swingTrapShapes'
 import { playerPosition, predictPlayerPosition } from '../playerTracker'
 import { killPlayer, isInvulnerable } from '../gameState'
 import { orientedBoxHitsPlayer } from '../hits'
+import { isMobileNow } from '../platform'
 import { addSafeSystem } from '../safeSystem'
 import { registerReplayActor, recordHazardEvent } from '../effects/replayStage'
 
@@ -697,6 +698,28 @@ function swingVolumeFor(u: SwingUnit): number {
  * looping clip restarts on its own, which for the plank means it flies back up
  * from under whoever is standing on it.
  */
+/**
+ * The playback speed a landed plank is HELD at.
+ *
+ * Zero on desktop, which is what "frozen" should mean and what has always
+ * worked there: the board stops at its landed pose and stays drawn.
+ *
+ * The mobile client does not draw it. Reported from a device as the plank going
+ * invisible "when hitting the ground", with the swing itself playing normally —
+ * and the instant it lands is the one frame in the whole cycle where this speed
+ * goes to 0, which makes an animator that stops evaluating a stopped clip the
+ * only candidate that fits. A clip that is still advancing, however slowly,
+ * gives it nothing to skip.
+ *
+ * 1e-4 of a clip per second: over the full SWING_TRAP_PLANK_HOLD_SECONDS the
+ * board creeps six ten-thousandths of the way through its animation, which is
+ * millimetres on an 8m swing. The hit boxes are driven by `elapsed`, which is
+ * frozen separately and exactly, so what kills you does not move at all.
+ */
+function holdFreezeSpeed(): number {
+  return isMobileNow() ? 0.0001 : 0
+}
+
 function startSwing(u: SwingUnit): void {
   u.state = 'swinging'
   u.elapsed = 0
@@ -959,7 +982,7 @@ function swingSystem(dt: number) {
           if (anim !== null) {
             for (const st of anim.states) {
               if (u.model.clips.indexOf(st.clip) < 0) continue
-              st.speed = 0
+              st.speed = holdFreezeSpeed()
               // CLEAR shouldReset BEFORE freezing. It is still true from the
               // frame this swing started, and it is not consumed silently —
               // re-sending the component with it set restarts the clip from
