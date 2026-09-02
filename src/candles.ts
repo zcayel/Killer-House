@@ -8,11 +8,12 @@
  * can't be lit.
  */
 
-import { engine, Transform, LightSource, VisibilityComponent, Name } from '@dcl/sdk/ecs'
+import { engine, Transform, LightSource, VisibilityComponent, Name, Entity } from '@dcl/sdk/ecs'
 import { Vector3, Color3 } from '@dcl/sdk/math'
 import { gameStarted } from './gameState'
 import { playerPosition } from './playerTracker'
 import { addSafeSystem } from './safeSystem'
+import { isMobileNow, platformKnown } from './platform'
 import {
   CHANDELIER_ENTITY_NAME,
   CANDLE_GLOW_INTENSITY,
@@ -22,6 +23,8 @@ import {
   HOUSE_RECT,
   YARD_DARKNESS,
   DARK_LIGHT_RANGE,
+  MOBILE_DARK_LIGHT_INTENSITY,
+  MOBILE_DARK_LIGHT_RANGE,
   DARK_LIGHT_INTENSITY,
   INTERIOR_DARKNESS
 } from './config'
@@ -33,10 +36,29 @@ import {
 // light, not this veil) are the only relief.
 export let darknessAlpha = 0
 
+/**
+ * The baseline glow the player carries, kept so the mobile boost can find it.
+ *
+ * Applied from a system rather than at creation because getPlatform() answers
+ * ASYNCHRONOUSLY — isMobileNow() reads false until the explorer replies, so a
+ * phone asked at init time gets told it is a desktop and keeps the dim light
+ * forever. Latched once, the first frame the real answer is in.
+ */
+let baselineLight: Entity | null = null
+let baselineLightTuned = false
+
 const FLAME_COLOR = Color3.create(1.0, 0.72, 0.42)
 const DARK_COLOR = Color3.create(0.5, 0.55, 0.75) // cold moonlit gray-blue
 
 function candleSystem(dt: number) {
+  if (!baselineLightTuned && platformKnown() && baselineLight !== null) {
+    baselineLightTuned = true
+    if (isMobileNow()) {
+      const l = LightSource.getMutable(baselineLight)
+      l.intensity = MOBILE_DARK_LIGHT_INTENSITY
+      l.range = MOBILE_DARK_LIGHT_RANGE
+    }
+  }
   if (!gameStarted) return
   const p = playerPosition
   const insideHouse = p.y > 2 && p.x > HOUSE_RECT.minX && p.x < HOUSE_RECT.maxX && p.z > HOUSE_RECT.minZ && p.z < HOUSE_RECT.maxZ
@@ -57,6 +79,7 @@ export function initCandles() {
     range: DARK_LIGHT_RANGE,
     shadow: false
   })
+  baselineLight = light
 
   // Hide every hand-placed decorative candle (found by name). Only the
   // ritual candles — spawned by gameLoop.ts — should ever be visible.

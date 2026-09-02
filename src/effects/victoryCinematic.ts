@@ -153,6 +153,34 @@ let shownFov = -1
  */
 let landRetries = 0
 let landCheck = 0
+/**
+ * The same idea as landRetries, for the OTHER half of the teleport: did the
+ * avatar actually end up facing the lens?
+ *
+ * THE PROBLEM. The aim, the InputModifier lock and the MainCamera hand-off all
+ * go out on the same tick by three different roads — an RPC and two CRDT
+ * writes — and the client applies them in whatever order it likes. Lose that
+ * race and the body's rotation is set and then immediately overwritten by
+ * whatever the camera change decides the avatar should be doing, which is a
+ * hero standing on a pile of skulls showing the camera the back of his head
+ * for the entire shot.
+ *
+ * So the facing, like the landing, is checked rather than assumed. Unlike the
+ * landing it can be checked cheaply and exactly — the player Transform is
+ * readable — so this stops the instant it is right and costs nothing on a
+ * client that got it first time.
+ *
+ * WHY THE NUMBERS. Three attempts 0.12s apart puts the last possible re-aim at
+ * 0.36s, comfortably inside VICTORY_FIRST_EMOTE_DELAY (0.45s): a movePlayerTo
+ * cuts a running emote, so every retry has to be spent before the celebration
+ * starts. The tolerance is loose because the aim is deliberately only a mean
+ * bearing across the visible arc (see VICTORY_AVATAR_FACE_T) — this is looking
+ * for a body pointing the WRONG WAY, not for a few degrees of drift.
+ */
+const FACE_CHECK_INTERVAL = 0.12
+const FACE_TOLERANCE_DEG = 40
+let faceRetries = 0
+let faceCheck = 0
 
 // ── THE PILE ───────────────────────────────────────────────────────────────
 
@@ -453,26 +481,72 @@ function lockBody(locked: boolean): void {
 const LAND_CHECK_INTERVAL = 0.35
 
 /**
- * Put the hero on the summit, facing out of the board.
+ * Where the hero looks: at the lens, at eye height.
  *
- * The look target is OUT along +X because that is where the camera finishes:
- * the wide shot is a front-on hero shot, not the back of someone's head.
- * avatarTarget turns the body, cameraTarget turns the view the player gets
- * handed back — both, because only setting one leaves the two disagreeing the
- * moment the cinematic releases.
+ * AT THE LENS, not at a fixed bearing. The old aim was a hardcoded +6 on x,
+ * which pointed the hero straight out of the board and left him looking past
+ * the camera for the whole of the opening. This reads the camera's own path
+ * instead, so the aim follows the shot if the shot is ever recut.
+ */
+function aimPoint(): Vector3 {
+  const eye = poseAt(VICTORY_AVATAR_FACE_T).pos
+  return Vector3.create(eye.x, VICTORY_STAND_HEIGHT + 1.6, eye.z)
+}
+
+/** Flat compass bearing from the stage to the lens, in degrees. */
+function aimBearing(): number {
+  const s = VICTORY_STAGE_POSITION
+  const p = aimPoint()
+  return Math.atan2(p.x - s.x, p.z - s.z) * (180 / Math.PI)
+}
+
+/**
+ * Which way the avatar is ACTUALLY facing, or null if it cannot be read.
+ *
+ * The player Transform is written by the client and read-only to us, which is
+ * the whole reason the aim has to go through movePlayerTo — but reading it is
+ * free, and it is the only way to find out whether the aim took.
+ */
+function playerBearing(): number | null {
+  if (!Transform.has(engine.PlayerEntity)) return null
+  const f = Vector3.rotate(Vector3.Forward(), Transform.get(engine.PlayerEntity).rotation)
+  if (Math.abs(f.x) < 1e-4 && Math.abs(f.z) < 1e-4) return null
+  return Math.atan2(f.x, f.z) * (180 / Math.PI)
+}
+
+/** Smallest angle between two bearings, 0..180. */
+function bearingError(a: number, b: number): number {
+  let d = (a - b) % 360
+  if (d > 180) d -= 360
+  if (d < -180) d += 360
+  return Math.abs(d)
+}
+
+/**
+ * Put the hero on the summit, facing the camera.
+ *
+ * NO cameraTarget — and its absence is the fix for a hero who spent the whole
+ * shot with his back to the lens, staring at the leaderboard.
+ *
+ * ADR-257 (the proposal that added avatarTarget) is explicit that in third
+ * person "the camera and the avatar rotation are two separate things", and
+ * says you will usually want to set both fields to the same point. That advice
+ * is for a scene whose camera the player still owns. It is wrong here: this
+ * shot asserts its own VirtualCamera every frame for the whole sequence, so a
+ * cameraTarget cannot move anything the player sees — it can only give the
+ * client a second, competing opinion about which way the body should point,
+ * and the observed result on a live build was the body ending up facing
+ * exactly opposite the point both fields named.
+ *
+ * Nothing is lost by dropping it. The view the player is handed back is set by
+ * resetRound()'s own movePlayerTo, which fires immediately after
+ * endVictoryCinematic() on every path out of a win.
  */
 function standOnPile(): void {
   const s = VICTORY_STAGE_POSITION
-  // AT THE LENS, not at a fixed bearing. The old aim was a hardcoded +6 on x,
-  // which pointed the hero straight out of the board and left him looking past
-  // the camera for the whole of the opening. This reads the camera's own path
-  // instead, so the aim follows the shot if the shot is ever recut.
-  const eye = poseAt(VICTORY_AVATAR_FACE_T).pos
-  const lookAt = Vector3.create(eye.x, VICTORY_STAND_HEIGHT + 1.6, eye.z)
   movePlayerTo({
     newRelativePosition: Vector3.create(s.x, VICTORY_STAND_HEIGHT, s.z),
-    cameraTarget: lookAt,
-    avatarTarget: lookAt
+    avatarTarget: aimPoint()
   }).catch((err) => {
     console.error('victory movePlayerTo failed:', err)
   })
@@ -532,6 +606,8 @@ export function startVictoryCinematic(): void {
 
   landRetries = 4
   landCheck = LAND_CHECK_INTERVAL
+  faceRetries = 3
+  faceCheck = FACE_CHECK_INTERVAL
   standOnPile()
 
   // The heap landing. Positional at the pile rather than global: this one is
@@ -560,6 +636,7 @@ export function endVictoryCinematic(): void {
   victoryCinematicActive = false
   victoryCinematicHolding = false
   landRetries = 0
+  faceRetries = 0
   // Or the next win opens on the last win's field of view: placeCamera writes
   // the component only when the value CHANGES, and a stale cache says 53 is
   // already on screen when the rig has just been handed back at whatever the
@@ -594,6 +671,12 @@ function victorySystem(dt: number): void {
   // the ground rather than settling the last few centimetres onto the collider,
   // and the horizontal check catches a move that was refused outright as well
   // as one that fell through.
+  // One re-issue per frame at most: the landing check and the facing check
+  // below can both come due on the same tick, and firing two teleports into
+  // the same spot on one frame is how you get an avatar that stutters in a
+  // shot whose entire job is to be looked at.
+  let reIssued = false
+
   if (landRetries > 0) {
     landCheck -= dt
     if (landCheck <= 0) {
@@ -604,8 +687,31 @@ function victorySystem(dt: number): void {
       if (offGround || offMark) {
         landRetries--
         standOnPile()
+        reIssued = true
       } else {
         landRetries = 0
+      }
+    }
+  }
+
+  // DID THE TURN TAKE? See faceRetries.
+  if (faceRetries > 0) {
+    faceCheck -= dt
+    if (faceCheck <= 0) {
+      faceCheck = FACE_CHECK_INTERVAL
+      const facing = playerBearing()
+      if (facing !== null && bearingError(facing, aimBearing()) <= FACE_TOLERANCE_DEG) {
+        faceRetries = 0
+      } else if (!reIssued) {
+        faceRetries--
+        standOnPile()
+        // Said once, on the last attempt, and only when it never worked: if
+        // this line ever appears the cause is not a lost race and no number of
+        // retries will help — the client is holding the avatar's rotation
+        // itself, and the shot needs recutting rather than re-aiming.
+        if (faceRetries === 0) {
+          console.log('victory: avatar facing never took — bearing', facing, 'wanted', aimBearing())
+        }
       }
     }
   }

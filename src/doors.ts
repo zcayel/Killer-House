@@ -22,6 +22,7 @@
 import { engine, Transform, LightSource, InputAction, inputSystem, Entity } from '@dcl/sdk/ecs'
 import { Vector3, Color3 } from '@dcl/sdk/math'
 import { getActionEvents } from '@dcl/asset-packs/dist/events'
+import { isMobileNow } from './platform'
 import { playerPosition } from './playerTracker'
 import { otherPlayerPositions } from './multiplayer'
 import { addSafeSystem, reportFailure } from './safeSystem'
@@ -36,6 +37,36 @@ const DOOR_AUTO_CLOSE_SECONDS = 2
 // mechanic the candles already use for exactly that reason, just without
 // the hold (a door only needs a press, not a multi-second channel).
 const DOOR_OPEN_RADIUS = 3.5
+
+/**
+ * THE MOONLIGHT IS DESKTOP-ONLY, and this is the one thing in this file that
+ * is not about doors.
+ *
+ * The light below is a point light at y=4.0 — ceiling height, just inside each
+ * doorway — with range 8 and, deliberately, NO SHADOW: two shadow-casting
+ * lights in a house this size is not a cost this scene can pay. Shadowless
+ * means it passes through the walls, which on desktop is invisible. Its
+ * per-pixel falloff is smooth, so the light that leaks into the next room
+ * reads as a faint wash nobody notices.
+ *
+ * The mobile client lights large surfaces far more coarsely, and the same leak
+ * lands there as a HARD-EDGED WHITE WEDGE pinned to an interior wall near the
+ * ceiling — a bright flat shape with a straight diagonal edge along the wall's
+ * own triangulation. It reads as a rendering fault, because it is one.
+ * Reported from a real device, twice, in two different rooms; on desktop the
+ * same doorway looks exactly as intended.
+ *
+ * Dimming would not have fixed it — the hard edge comes from how the surface
+ * is lit, not from how bright the light is, so a weaker light just draws a
+ * dimmer wedge. Shortening the range enough to keep it off the far walls would
+ * have left it barely reaching past the door frame, which is not moonlight
+ * pouring in, it is a glow on a doorstep.
+ *
+ * So mobile gets no door light at all. Everything else about the door is
+ * untouched there: it still swings, still plays its sound, still opens and
+ * closes on the same rules.
+ */
+const DOOR_LIGHT_ENABLED = () => !isMobileNow()
 
 // light sits just INSIDE each doorway (front door opens on the south wall,
 // back door on the north wall)
@@ -74,7 +105,10 @@ function doorSystem(dt: number) {
     // closing once everyone's stepped away.
     if (near && !r.isOpen && pressed) {
       r.isOpen = true
-      LightSource.getMutable(r.light).active = true
+      // Checked here rather than at init: platform detection resolves
+      // asynchronously and answers "desktop" until it does, so asking at
+      // scene load can hand a phone the desktop answer for good.
+      LightSource.getMutable(r.light).active = DOOR_LIGHT_ENABLED()
       getActionEvents(r.door).emit('Open', {} as any)
     }
     if (near && r.isOpen) {

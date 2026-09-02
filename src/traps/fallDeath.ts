@@ -15,7 +15,13 @@
  */
 
 import { engine, Transform } from '@dcl/sdk/ecs'
-import { FALL_KILL_DISTANCE, FALL_KILL_MIN_SPEED } from '../config'
+import {
+  FALL_KILL_DISTANCE,
+  FALL_KILL_MIN_SPEED,
+  FALL_KILL_MIN_START_Y,
+  HOUSE_RECT,
+  HOUSE_WING_RECTS
+} from '../config'
 import { killPlayer, isInvulnerable } from '../gameState'
 import { addSafeSystem } from '../safeSystem'
 
@@ -44,6 +50,13 @@ let peakFallSpeed = 0 // fastest downward speed reached during that descent
 let descentTime = 0 // seconds spent in the current descent
 let graceTimer = 0 // seconds of consecutive non-descent so far
 let descentStartY = 0 // world Y the current descent began at — names the death
+// WHERE the descent began, not just how high. The height gate alone says "you
+// were up high"; it cannot tell the second floor from the same altitude out
+// over the yard or off the roofline. On request, the fall only kills if it
+// started with the player standing ON the second floor, so the footprint is
+// recorded with the height and both are tested.
+let descentStartX = 0
+let descentStartZ = 0
 
 function resetFall() {
   dropDistance = 0
@@ -51,6 +64,33 @@ function resetFall() {
   descentTime = 0
   graceTimer = 0
   descentStartY = 0
+  descentStartX = 0
+  descentStartZ = 0
+}
+
+/**
+ * Was the player standing on the second floor when this descent began?
+ *
+ * The second floor is the single room upstairs — the one holding Soccer Ball_3
+ * at (16.84, 8.32, 16.82), with the crate at z 19.74 and the swing trap's blade
+ * at z 10.94 marking its extent. Rather than hand-type that room's corners and
+ * risk a rect that stops short of the railing a player actually falls over,
+ * this tests the BUILDING footprint and lets the height gate do the rest:
+ * inside the house, above FALL_KILL_MIN_START_Y, is the second floor.
+ *
+ * The wings are included because they are part of the same structure. Anything
+ * outside both — the yard, the graves, the fence line, open air past the
+ * roofline — cannot produce a lethal fall at any height or speed.
+ */
+function startedOnSecondFloor(): boolean {
+  if (descentStartY < FALL_KILL_MIN_START_Y) return false
+  const x = descentStartX
+  const z = descentStartZ
+  if (x >= HOUSE_RECT.minX && x <= HOUSE_RECT.maxX && z >= HOUSE_RECT.minZ && z <= HOUSE_RECT.maxZ) return true
+  for (const w of HOUSE_WING_RECTS) {
+    if (x >= w.minX && x <= w.maxX && z >= w.minZ && z <= w.maxZ) return true
+  }
+  return false
 }
 
 /**
@@ -79,7 +119,8 @@ function fallDeathSystem(dt: number) {
   if (dt <= 0) return
   if (!Transform.has(engine.PlayerEntity)) return
 
-  const y = Transform.get(engine.PlayerEntity).position.y
+  const p = Transform.get(engine.PlayerEntity).position
+  const y = p.y
 
   if (isInvulnerable()) {
     // mid-death/respawn: don't carry fall state across the teleport
@@ -108,7 +149,13 @@ function fallDeathSystem(dt: number) {
     // above, so the height we started from this frame is (y - dy). A streak
     // resumed after a grace pause keeps its original start, which is what
     // fallCause() wants.
-    if (dropDistance === 0) descentStartY = y - dy
+    if (dropDistance === 0) {
+      descentStartY = y - dy
+      // x/z barely move over one frame of free-fall, so this frame's are the
+      // ledge's for every purpose this test has.
+      descentStartX = p.x
+      descentStartZ = p.z
+    }
     dropDistance += -dy
     descentTime += dt
     graceTimer = 0
@@ -128,7 +175,14 @@ function fallDeathSystem(dt: number) {
   // Uncomment to tune thresholds in preview - shows every completed descent:
   // if (dropDistance > 0.5) console.log(`fall: dropped ${dropDistance.toFixed(2)}m, peak ${peakFallSpeed.toFixed(1)} m/s, avg ${(descentTime > 0 ? dropDistance / descentTime : 0).toFixed(1)} m/s`)
   const avgSpeed = descentTime > 0 ? dropDistance / descentTime : 0
-  if (dropDistance >= FALL_KILL_DISTANCE && (peakFallSpeed >= FALL_KILL_MIN_SPEED || avgSpeed >= FALL_KILL_AVG_SPEED)) {
+  // WHERE IT STARTED, before how far or how fast it went. The two thresholds
+  // below describe the shape of a fall and say nothing about its origin, so on
+  // their own they killed for any fast 4.5m drop — off the chandelier, into a
+  // stairwell, or after a double jump from high ground. Upstairs is the only
+  // place in this house you are meant to be able to fall from, so that is now a
+  // precondition rather than something the numbers are trusted to imply.
+  const fromUpstairs = startedOnSecondFloor()
+  if (fromUpstairs && dropDistance >= FALL_KILL_DISTANCE && (peakFallSpeed >= FALL_KILL_MIN_SPEED || avgSpeed >= FALL_KILL_AVG_SPEED)) {
     killPlayer(fallCause(descentStartY))
   }
   resetFall()
