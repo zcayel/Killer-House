@@ -4438,7 +4438,7 @@
           "json": {
             "name": "Killer House",
             "description": "\"Enter the Killer House, light your candles, and find a path to freedom through a maze of deadly traps. Die, learn, and jump straight back in to master faster routes, beat your best escape time, and race other players to see who can survive the house fastest.\" \n",
-            "thumbnail": "assets/images/image.jpg",
+            "thumbnail": "assets/images/KH_thumbnail.jpg",
             "ageRating": "A",
             "categories": [
               "art",
