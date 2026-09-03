@@ -4446,8 +4446,18 @@
             ],
             "author": "zCayel",
             "email": "zcayel@gmail.com",
-            "tags": [],
+            "tags": [
+              "Horror",
+              "Spooky",
+              "Thrill",
+              "Action",
+              "Survival"
+            ],
             "layout": {
+              "base": {
+                "x": 0,
+                "y": 0
+              },
               "parcels": [
                 {
                   "x": 0,
@@ -4513,14 +4523,8 @@
                   "x": 3,
                   "y": 0
                 }
-              ],
-              "base": {
-                "x": 0,
-                "y": 0
-              }
+              ]
             },
-            "silenceVoiceChat": false,
-            "disablePortableExperiences": false,
             "spawnPoints": [
               {
                 "name": "SpawnArea1",
@@ -4558,9 +4562,7 @@
             "skyboxConfig": {
               "fixedTime": 79200
             },
-            "creator": "0x161b03B0a60723c710d1B4DCD71556803512690F",
-            "disableNearbyVoiceChat": false,
-            "hideLandscapeTerrain": false
+            "creator": "0x161b03B0a60723c710d1B4DCD71556803512690F"
           }
         }
       }

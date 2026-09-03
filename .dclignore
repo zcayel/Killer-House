@@ -44,3 +44,4 @@ __pycache__
 LICENSE
 *.bak_wrong
 *.bak_wrong_grip
+*.bak

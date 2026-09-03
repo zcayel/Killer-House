@@ -14,8 +14,11 @@
   },
   "main": "bin/index.js",
   "tags": [
-    "art",
-    "social"
+    "Horror",
+    "Spooky",
+    "Thrill",
+    "Action",
+    "Survival"
   ],
   "scene": {
     "base": "0,0",
