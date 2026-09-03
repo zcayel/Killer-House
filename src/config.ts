@@ -604,6 +604,20 @@ export const CANDLE_OFFSET_BUCKETS: Vector3[] = [
   Vector3.create(-0.2, 0, 0),
   Vector3.create(0.1, 0, -0.22)
 ]
+/**
+ * Anything at or above this height counts as the second floor.
+ *
+ * The pool sits in three clear bands — 0 (yard), 2.65-4.04 (ground and the
+ * mid level), and 8.4-8.5 (upstairs) — so 6 lands in open space between the
+ * top two and cannot be crossed by a small nudge to any existing spot.
+ *
+ * Used by assignRitualCandles() to keep the upstairs represented in EVERY
+ * round, on request: at least one candle up there, chosen at random from
+ * whichever spots qualify rather than pinned to one, so the floor is a
+ * certainty but the candle is not always the same one.
+ */
+export const SECOND_FLOOR_MIN_Y = 6
+
 export const CANDLE_POOL: CandleSpot[] = [
   // yard
   { pos: Vector3.create(10, 0, 4) }, // front yard, skeleton country
@@ -617,7 +631,12 @@ export const CANDLE_POOL: CandleSpot[] = [
   // close enough that the wax visibly touched at some owner offsets. Still
   // reads as "at the ball". (The move also widened its clearance of the old
   // thrown-knife line, which no longer exists.)
-  { pos: Vector3.create(18.5, 4.04, 19.4), guaranteed: true }, // at the soccer ball prop (was on the old table) — always assigned, on request
+  // NOT at the soccer ball any more, whatever this comment used to say: the ball
+  // is at y=8.32 on the second floor and this sits 4.3m below it. It moved when
+  // the house model was swapped. Kept as a mid-level guaranteed spot because it
+  // has always worked as one; the second-floor entry below is the real "at the
+  // ball" candle now.
+  { pos: Vector3.create(18.5, 4.04, 19.4), guaranteed: true }, // mid level — always assigned
   // Moved 0.20m off the west wall — was 0.22m at its worst offset.
   { pos: Vector3.create(14.44, 2.7, 21.42) }, // west room (the nearby west-wall spike unit was removed, see WALL_SPIKE_UNITS)
   { pos: Vector3.create(26.0, 2.66, 10.55) }, // front-door area — moved 1.35m in off the wall (was 0.20m INSIDE it at its worst offset)
@@ -664,7 +683,7 @@ export const CANDLE_POOL: CandleSpot[] = [
   // THIS IS THE ONE THAT WAS SPAWNING INSIDE A COLLIDER. At several owner
   // offsets the wax sat 0.16m INSIDE Soccer Ball_3 — which is why it looked
   // fine for some players and buried for others. Moved 0.60m.
-  { pos: Vector3.create(17.06, 8.5, 17.88) }, // near the altar spot
+  { pos: Vector3.create(17.06, 8.5, 17.88) }, // near the altar spot, beside the soccer ball
   { pos: Vector3.create(22.55, 8.45, 19.7) }, // far corner — moved 1.68m clear of the wall
   { pos: Vector3.create(19, 8.4, 17.5) } // survive the climb
 ]

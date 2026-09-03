@@ -90,6 +90,7 @@ import { Vector3, Color3, Color4, Quaternion } from '@dcl/sdk/math'
 import { movePlayerTo } from '~system/RestrictedActions'
 import {
   CANDLE_POOL,
+  SECOND_FLOOR_MIN_Y,
   CANDLE_OFFSET_BUCKETS,
   RITUAL_CANDLES_REQUIRED,
   RITUAL_CANDLES_ROUND1,
@@ -417,9 +418,15 @@ function shuffledIndices(n: number): number[] {
  * CANDLE_POOL entry turns out to be genuinely bad, fix that one coordinate
  * directly.
  *
- * Entries flagged `guaranteed: true` in CANDLE_POOL (the table, the
- * butcher's knife) are seeded first so they're in EVERY round's draw, on
- * request; the rest of `needed` is filled randomly from everything else.
+ * Entries flagged `guaranteed: true` in CANDLE_POOL are seeded first so they're
+ * in EVERY round's draw, on request; the rest of `needed` is filled randomly
+ * from everything else.
+ *
+ * The SECOND FLOOR is seeded the same way but as a TIER rather than a fixed
+ * spot: one upstairs candle is guaranteed every round, picked at random from
+ * whichever pool entries are up there. Pinning one entry with `guaranteed`
+ * would have worked too, but it would put the same candle in the same corner
+ * every single game — this keeps the floor certain and the spot varied.
  */
 function assignRitualCandles() {
   const needed = getCandlesRequired()
@@ -427,8 +434,19 @@ function assignRitualCandles() {
     if (spot.guaranteed) acc.push(idx)
     return acc
   }, [])
-  const remaining = shuffledIndices(CANDLE_POOL.length).filter((i) => !guaranteed.includes(i))
-  const activeIndices = new Set([...guaranteed, ...remaining].slice(0, needed))
+  // Seed the upstairs unless a `guaranteed` entry is already up there, so the
+  // two rules can never spend two of `needed` on the same requirement.
+  const seeded = guaranteed.slice()
+  const alreadyUpstairs = guaranteed.some((i) => CANDLE_POOL[i].pos.y >= SECOND_FLOOR_MIN_Y)
+  if (!alreadyUpstairs) {
+    const upstairs = shuffledIndices(CANDLE_POOL.length).filter(
+      (i) => CANDLE_POOL[i].pos.y >= SECOND_FLOOR_MIN_Y && !seeded.includes(i)
+    )
+    if (upstairs.length > 0) seeded.push(upstairs[0])
+  }
+
+  const remaining = shuffledIndices(CANDLE_POOL.length).filter((i) => !seeded.includes(i))
+  const activeIndices = new Set([...seeded, ...remaining].slice(0, needed))
 
   // Owner-only write (see multiplayer.ts) — sets which of MY stations are
   // active this round and snuffs all of mine back out. syncStationVisuals()
